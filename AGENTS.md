@@ -18,12 +18,16 @@ its key-value store). Build, test, install and preview steps are in `README.md`;
 - `src/ui.ts`: the whole page (one serialized client function, its CSS and markup); `src/i18n.ts`: every user-facing
   string, in English (the only language).
 - `scripts/build.mjs`: the manifest (settings labels come from i18n `settings`) and the ZIP.
+- `scripts/release.mjs`, `scripts/release-notes.mjs`, `scripts/check-version.mjs`: releases (see `README.md`) and
+  CI's version check; `.github/workflows/release.yml` builds a `v*` tag into a GitHub release.
 - `src/*.test.ts`: vitest with a fake Decaid; one test runs the built bundle without a `URL` class, as Decaid does.
 - `tools/preview-server.mjs`: fake Decaid (8080) and a Streamline checkout (3000, `SKIN=<folder>`).
 
 ## Rules
 
-- **Don't change `VERSION`** in feature work; add what changed to the coming `## X.Y.Z` section of `CHANGELOG.md`.
+- **Don't change `VERSION`** (nor `package.json`'s `version`) in feature work: CI refuses it outside a
+  `release/X.Y.Z` pull request from `scripts/release.mjs`. Add what changed to the coming `## X.Y.Z` section of
+  `CHANGELOG.md`; it becomes the release's "What's new".
 - **Never delete the user's data** (Decaid beans, batches, grinders, profiles, shots) without asking first. The
   plugin never deletes beans, batches or grinders; a shot only with an explicit confirmation.
 - **Data stays in Decaid, readable by other apps:** coffees as beans + batches, the shot's rating and notes in
@@ -40,8 +44,10 @@ its key-value store). Build, test, install and preview steps are in `README.md`;
 - Don't merge, approve, enable auto-merge, close others' PRs, tag, publish a release, dispatch a workflow, rewrite
   published history, add collaborators, deploy keys or secrets, or change repository settings unless the owner asks
   for that specific action.
-- GitHub Free has no branch protection for this private repository, so these rules are what protects `main`, together
-  with the `.githooks/pre-push` hook (see `README.md`). Don't bypass it (`--no-verify`) or remove it.
+- A ruleset on GitHub requires a pull request for `main`, and the `.githooks/pre-push` hook (see `README.md`) refuses
+  direct pushes from a clone. Don't bypass either (`--no-verify`) or remove them.
+- The repository is public: nothing private goes in (keys, tokens, home network addresses, other private
+  repositories' names or code).
 - Workflows keep least privilege (`permissions: contents: read` unless a job needs more) and use only GitHub-owned
   actions (the repository allows no others).
 - This file is the one source of the rules: `CLAUDE.md` and `.github/copilot-instructions.md` only point here. Update
@@ -67,7 +73,7 @@ its key-value store). Build, test, install and preview steps are in `README.md`;
 
 ## Sibling repository: Beanbox
 
-Bean Journal grew out of the Beanbox plugin (`pagratios/decentespresso-beanbox`, private, its `plugin/` folder) and
+Bean Journal grew out of the owner's Beanbox plugin (a private repository, its `plugin/` folder) and
 the two share most of their tablet code. **A change in one that isn't specific to it belongs in both:**
 
 - Shared: Decaid quirks and API use, Streamline surfaces and the overlay protocol, keep ratio, gear keeping,
@@ -104,5 +110,6 @@ the two share most of their tablet code. **A change in one that isn't specific t
   `SKIN=<stock Streamline checkout>` the skin is on http://localhost:3000/; the page alone is
   http://localhost:8080/api/v1/plugins/bean-journal.reaplugin/ui?view=shot&embed=1. Check at 1340×800 and 1280×800
   that `document.scrollingElement.scrollHeight === innerHeight`.
-- The owner's tablet runs Decaid at http://192.168.2.34:8080. Read from it freely; change data on it only when asked.
+- The owner's tablet runs Decaid on their home network (its address is in the owner's own instructions, not in this
+  public repository). Read from it freely; change data on it only when asked.
 - Talk to the owner in the language they write in (often Greek); keep code, commits and docs in English.

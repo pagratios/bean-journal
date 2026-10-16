@@ -1,0 +1,107 @@
+name: Release
+
+# A `v*` tag (from `node scripts/release.mjs tag`) is tested, built and published as a GitHub release with
+# bean-journal.reaplugin.zip, from which Decaid installs and updates the plugin. A manual run on a branch only leaves
+# a labelled workflow artifact.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Only to create the release.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and tags: release notes list the commits since the previous tag.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Read version
+        id: version
+        run: |
+          version=$(sed -nE 's/^export const VERSION = "([0-9]+\.[0-9]+\.[0-9]+)";.*/\1/p' src/plugin.ts)
+          if [ -z "$version" ]; then
+            echo "::error::Could not read VERSION from src/plugin.ts"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match plugin version $version"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "${GITHUB_REF_NAME}^{commit}" origin/main; then
+              echo "::error::Tag ${GITHUB_REF_NAME} is not on main"
+              exit 1
+            fi
+            asset="bean-journal.reaplugin.zip"
+          else
+            # Not a release: the file carries the branch and commit so it can't be mistaken for one.
+            branch=$(echo "${GITHUB_REF_NAME}" | tr '/' '-' | tr -cd 'A-Za-z0-9._-')
+            asset="bean-journal.reaplugin-$version-$branch-${GITHUB_SHA::7}.zip"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Check release notes
+        if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/release-notes.mjs CHANGELOG.md "$VERSION" > /dev/null
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Name the file
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ASSET: ${{ steps.version.outputs.asset }}
+        run: |
+          mkdir -p dist
+          cp "build/bean-journal.reaplugin-$VERSION.zip" "dist/$ASSET"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.asset }}
+          path: dist/*
+          if-no-files-found: error
+
+      # "What's new" from this version's CHANGELOG.md section, how to install it, then every commit on main since the
+      # previous v* tag, linked to the commit, crediting only contributors other than the owner. Decaid finds the file
+      # by its exact name at every update, so it is always bean-journal.reaplugin.zip.
+      - name: Create GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/compare/$previous...$GITHUB_REF_NAME" --paginate \
+              --jq '.commits[] | [.sha, (.author.login // ""), (.parents | length), (.commit.message | split("\n")[0])] | @tsv' \
+              > "$RUNNER_TEMP/commits.tsv"
+          else
+            : > "$RUNNER_TEMP/commits.tsv"
+          fi
+          node scripts/release-notes.mjs CHANGELOG.md "$VERSION" "$RUNNER_TEMP/commits.tsv" \
+            "$GITHUB_REPOSITORY" "$previous" "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$GITHUB_REF_NAME" dist/bean-journal.reaplugin.zip --title "Bean Journal $VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag
