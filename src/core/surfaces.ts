@@ -38,8 +38,8 @@ export type SurfacesInput = {
 export function streamlineSurfaces({ s, button, workflow, kept, lastGrind, water, now }: SurfacesInput) {
   const context = optionalObject(workflow.context);
   const surfaces: ObjectData[] = [];
-  // Full screen over the dashboard (Streamline's `size: "full"`): no reload of the skin on the way back.
-  const open = (view: string) => ({ type: "open", view, presentation: "overlay", size: "full" });
+  // Released Streamline versions ignore overlay size "full"; page navigation fills the screen there too.
+  const open = (view: string) => ({ type: "open", view, presentation: "page" });
   surfaces.push({
     id: button.id, kind: "header-button", label: clip(button.label, 24),
     ...(button.text ? { text: clip(button.text, 40) } : {}),

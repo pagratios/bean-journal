@@ -109,11 +109,11 @@ describe("the page", () => {
   });
 });
 
-// Run the serialized page's actual R2 helpers and click handler without starting the other tabs.
+// Run the serialized page's navigation and R2 helpers without starting the other tabs.
 const prefix = source.slice(source.indexOf("function client("), source.indexOf("  // ── Tabs ──"));
 const click = source.slice(source.indexOf("    r2Button.onclick ="), source.indexOf('    // Beside the "TDS %" caption'));
 const code = transformSync(`${prefix}
-  return { findR2, searchR2IfMissing, searchR2, theme: document.documentElement.dataset.theme,
+  return { findR2, searchR2IfMissing, searchR2, closeOverlay, fromSkin, theme: document.documentElement.dataset.theme,
     bindMeasurement(r2Button, tds) { ${click} } };
 }`, { format: "cjs", loader: "ts" }).code;
 
@@ -127,13 +127,16 @@ type R2Client = {
   searchR2IfMissing: () => Promise<void>;
   searchR2: () => Promise<boolean>;
   bindMeasurement: (button: MeasurementButton, tds: TdsInput) => void;
+  closeOverlay: () => void;
+  fromSkin: boolean;
   theme: string;
 };
 
 const sensor = { id: "AA:BB:CC:DD:EE:01", info: { name: "DiFluid R2",
   data: [{ key: "tds", type: "number" }], commands: [{ id: "measure" }] } };
 
-function setup({ found = false, state = "sleeping", hidden = false, search = "?view=shot&embed=1&theme=dark" } = {}) {
+function setup({ found = false, state = "sleeping", hidden = false, search = "?view=shot&embed=1&theme=dark",
+  referrer = "", historyLength = 1 } = {}) {
   const elements = {
     "view-shot": { hidden },
     notice: { textContent: "", className: "" },
@@ -148,11 +151,14 @@ function setup({ found = false, state = "sleeping", hidden = false, search = "?v
     throw new Error(`Unexpected request: ${url}`);
   });
   const dataset: Record<string, string> = {};
+  const assign = vi.fn(), back = vi.fn(), postMessage = vi.fn(), onPageEvent = vi.fn();
   const client: R2Client = runInNewContext(`${code}\nclient(texts)`, {
     module: { exports: {} }, texts, URLSearchParams, URL, Date, Number, Error, Event, setTimeout, Map, WeakMap,
-    MutationObserver: class { observe() {} }, addEventListener: () => {},
-    location: { search }, window: { matchMedia: () => ({ matches: false }) },
+    clearTimeout, MutationObserver: class { observe() {} }, addEventListener: onPageEvent,
+    history: { length: historyLength, back },
+    location: { search, assign }, window: { matchMedia: () => ({ matches: false }), parent: { postMessage } },
     document: {
+      referrer,
       documentElement: { dataset, classList: { add: () => {}, contains: () => false } },
       getElementById: (id: keyof typeof elements) => elements[id],
       querySelectorAll: (selector: string) => selector === "select" ? [] : [button],
@@ -161,8 +167,58 @@ function setup({ found = false, state = "sleeping", hidden = false, search = "?v
     },
     fetch: fetcher,
   });
-  return { client, fetcher, elements, button, dataset };
+  return { client, fetcher, elements, button, dataset, assign, back, postMessage, onPageEvent };
 }
+
+describe("fullscreen page navigation", () => {
+  const skin = "http://localhost:3000/?page=main";
+  const search = `?view=shot&returnTo=${encodeURIComponent(skin)}&theme=dark`;
+
+  it("returns to Streamline directly when there is no matching history entry", () => {
+    const t = setup({ search });
+    expect(t.client.fromSkin).toBe(true);
+    t.client.closeOverlay();
+    expect(t.assign).toHaveBeenCalledWith(skin);
+    expect(t.back).not.toHaveBeenCalled();
+    expect(t.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses history to restore the dashboard and cancels the fallback when it leaves", () => {
+    vi.useFakeTimers();
+    const t = setup({ search, referrer: "http://localhost:3000/", historyLength: 2 });
+    t.client.closeOverlay();
+    expect(t.back).toHaveBeenCalledOnce();
+    const [event, onHide, options] = t.onPageEvent.mock.calls.find(([name]) => name === "pagehide")!;
+    expect(event).toBe("pagehide");
+    expect(options).toEqual({ once: true });
+    onHide();
+    vi.advanceTimersByTime(1500);
+    expect(t.assign).not.toHaveBeenCalled();
+  });
+
+  it("falls back to Streamline when history navigation does not leave the page", () => {
+    vi.useFakeTimers();
+    const t = setup({ search, referrer: "http://localhost:3000/", historyLength: 2 });
+    t.client.closeOverlay();
+    vi.advanceTimersByTime(1499);
+    expect(t.assign).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(t.assign).toHaveBeenCalledWith(skin);
+  });
+
+  it.each(["javascript:alert(1)", "https://user:password@example.com/", "/"])("rejects an unsafe return address: %s", (returnTo) => {
+    const t = setup({ search: `?returnTo=${encodeURIComponent(returnTo)}&theme=dark` });
+    expect(t.client.fromSkin).toBe(false);
+  });
+
+  it("keeps small embedded cards on the overlay close protocol even with a return address", () => {
+    const t = setup({ search: `${search}&embed=1` });
+    t.client.closeOverlay();
+    expect(t.postMessage).toHaveBeenCalledWith({ type: "streamline:close" }, "*");
+    expect(t.assign).not.toHaveBeenCalled();
+    expect(t.back).not.toHaveBeenCalled();
+  });
+});
 
 describe("theme", () => {
   it("follows ?theme=, else Streamline's own choice in Decaid's store", async () => {

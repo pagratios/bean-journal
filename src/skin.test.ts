@@ -14,12 +14,15 @@ describe("Streamline's surfaces", () => {
     expect(a.live).toEqual({ endpoint: "changed" });
     expect(a.version).toBe(1);
     expect(surface(a, "bean-journal")).toEqual({ id: "bean-journal", kind: "header-button", label: "Bean Journal", text: "Choose coffee",
-      action: { type: "open", view: "pick", presentation: "overlay", size: "full" } });
+      action: { type: "open", view: "pick", presentation: "page" } });
     a = answer({ coffeeName: "A very long coffee name that won't fit", coffeeRoaster: "Roastery" });
-    expect(surface(a, "bean-journal")).toMatchObject({ label: "A very long coffee name…", text: "Roastery", action: { view: "shot" } });
+    expect(surface(a, "bean-journal")).toMatchObject({ label: "A very long coffee name…", text: "Roastery" });
+    expect(surface(a, "bean-journal")?.action).toEqual({ type: "open", view: "shot", presentation: "page" });
     expect(surface(a, "bean-journal")).not.toHaveProperty("image");
-    expect(surface(a, "bean-journal-saver")).toMatchObject({ kind: "screensaver-button", action: { type: "open", view: "shot", presentation: "overlay", size: "full" } });
-    expect(surface(a, "history-shot")).toMatchObject({ kind: "menu-item", menu: "shot-history", label: "Rate and edit", action: { type: "open", view: "shot", size: "full" } });
+    expect(surface(a, "bean-journal-saver")).toMatchObject({ kind: "screensaver-button" });
+    expect(surface(a, "bean-journal-saver")?.action).toEqual({ type: "open", view: "shot", presentation: "page" });
+    expect(surface(a, "history-shot")).toMatchObject({ kind: "menu-item", menu: "shot-history", label: "Rate and edit" });
+    expect(surface(a, "history-shot")?.action).toEqual({ type: "open", view: "shot", presentation: "page" });
     expect(JSON.stringify(a)).not.toMatch(/beanbox/i);
   });
 
