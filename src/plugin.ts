@@ -287,6 +287,76 @@ export function createPlugin(host: Host) {
     settingValues: Array.isArray(g.settingValues) ? g.settingValues.filter((v) => typeof v === "string") : [],
     settingSmallStep: number(g.settingSmallStep) ?? null, rpmSmallStep: number(g.rpmSmallStep) ?? null,
   });
+  // Settings lists put-away grinders too, and edits their burrs.
+  const grinderRow = (g: ObjectData) => ({ ...grinderView(g), burrs: text(g.burrs), archived: g.archived === true });
+
+  // ── Grinders and waters, kept from Settings ──
+  /**
+   * A new grinder in Decaid, or one of Decaid's edited (`id`): its model, burrs and the steps of its grind and speed.
+   * Two grinders with one name couldn't be told apart in the lists, so a taken name (a put-away one's too) is refused.
+   */
+  async function saveGrinder(b: ObjectData) {
+    const all = await grinderList(true);
+    const id = b.id == null ? null : text(b.id);
+    if (id !== null && !all.some((g) => text(g.id) === id)) throw new Error("grinderNotFound");
+    const body: ObjectData = {};
+    if (id === null || "model" in b) {
+      const model = typeof b.model === "string" ? b.model.replace(/\s+/g, " ").trim() : "";
+      if (!model || model.length > 80) throw new Error("invalidArguments");
+      if (all.some((g) => text(g.id) !== id && unaccented(text(g.model).trim()) === unaccented(model))) throw new Error("grinderExists");
+      body.model = model;
+    }
+    if ("burrs" in b) {
+      if (b.burrs !== null && typeof b.burrs !== "string") throw new Error("invalidArguments");
+      body.burrs = text(b.burrs).trim().slice(0, 80) || null;
+    }
+    for (const [field, max] of [["settingSmallStep", 100], ["rpmSmallStep", 1000]] as const) {
+      if (!(field in b)) continue;
+      const value = b[field] === null ? null : number(b[field]);
+      if (value === undefined || (value !== null && (value <= 0 || value > max))) throw new Error("invalidArguments");
+      body[field] = value;
+    }
+    if (id !== null && !Object.keys(body).length) throw new Error("invalidArguments");
+    const saved = id === null ? object(await local("/grinders", "POST", { settingType: "numeric", ...body }))
+      : object(await local(`/grinders/${enc(id)}`, "PUT", body));
+    return { grinder: grinderRow(saved) };
+  }
+  /** A grinder put away (Decaid's `archived`: out of the lists, old shots keep it) or back. Never deleted. */
+  async function archiveGrinder(b: ObjectData) {
+    const id = text(b.id);
+    if (typeof b.archived !== "boolean") throw new Error("invalidArguments");
+    if (!(await grinderList(true)).some((g) => text(g.id) === id)) throw new Error("grinderNotFound");
+    return { grinder: grinderRow(object(await local(`/grinders/${enc(id)}`, "PUT", { archived: b.archived }))) };
+  }
+  /**
+   * A water added to the list (at its top), or one renamed in place (`previous`). Only the list changes: shots keep
+   * the water they were made with.
+   */
+  async function saveWater(b: ObjectData) {
+    const name = waterName(b.name);
+    if (!name || (b.previous != null && typeof b.previous !== "string")) throw new Error("invalidArguments");
+    const same = (x: string, y: string) => unaccented(x) === unaccented(y);
+    const list = await waters();
+    const previous = waterName(b.previous);
+    const at = previous ? list.findIndex((x) => same(x, previous)) : -1;
+    if (previous && at < 0) throw new Error("notFound");
+    if (list.some((x, i) => i !== at && same(x, name))) throw new Error("waterExists");
+    const next = at >= 0 ? list.map((x, i) => i === at ? name : x) : [name, ...list].slice(0, WATERS_MAX);
+    await local(WATERS, "POST", next);
+    watersKnown = next;
+    return { waters: next };
+  }
+  /** A water off the list; shots made with it keep it. */
+  async function removeWater(b: ObjectData) {
+    const name = waterName(b.name);
+    if (!name) throw new Error("invalidArguments");
+    const list = await waters();
+    const next = list.filter((x) => unaccented(x) !== unaccented(name));
+    if (next.length === list.length) throw new Error("notFound");
+    await local(WATERS, "POST", next);
+    watersKnown = next;
+    return { waters: next };
+  }
 
   // ── The next shot ──
   const nextOf = (context: ObjectData): Next => ({
@@ -1041,8 +1111,13 @@ export function createPlugin(host: Host) {
       case "delete-shot": return serial(() => deleteShot(b));
       case "load-shot": return serial(() => loadShot(b.shotId, b.coffeeId));
       case "next-settings": return serial(async () => ({ next: await nextSettings(b) }));
-      case "grinders": return { grinders: (await grinderList()).map(grinderView) };
+      case "grinders": return b.includeArchived === true ? { grinders: (await grinderList(true)).map(grinderRow) }
+        : { grinders: (await grinderList()).map(grinderView) };
+      case "save-grinder": return serial(() => saveGrinder(b));
+      case "archive-grinder": return serial(() => archiveGrinder(b));
       case "waters": return { waters: await waters() };
+      case "save-water": return serial(() => saveWater(b));
+      case "remove-water": return serial(() => removeWater(b));
       case "preferences": return { preferences: preferences() };
       case "update-preferences": return updatePreferences(b);
       case "refractometer": {

@@ -117,7 +117,26 @@ function setup(settings: ObjectData = {}, world: World = {}) {
       if (method === "DELETE") { store.delete(key); return json({ deleted: true }); }
       return json(store.get(key));
     }
-    if (route === "/grinders") return json(q.get("includeArchived") === "true" ? grinders : grinders.filter((g) => !g.archived));
+    if (route === "/grinders") {
+      if (method === "POST") {
+        if (typeof b.model !== "string" || !b.model) return json({ error: "model" }, 400);
+        const made = { id: `g-${nextId++}`, settingType: "numeric", ...b, archived: false };
+        grinders.push(made);
+        return json(made, 201);
+      }
+      return json(q.get("includeArchived") === "true" ? grinders : grinders.filter((g) => !g.archived));
+    }
+    m = /^\/grinders\/([^/]+)$/.exec(route);
+    if (m) {
+      const i = grinders.findIndex((g) => g.id === decodeURIComponent(m![1]));
+      if (i < 0) return json({ error: "Grinder not found" }, 404);
+      if (method === "DELETE") throw new Error("The plugin never deletes a grinder");
+      if (method === "PUT") {
+        if (["model", "archived", "settingType"].some((k) => k in b && b[k] === null)) return json({ error: "null" }, 400);
+        grinders[i] = { ...grinders[i], ...b };
+      }
+      return json(grinders[i]);
+    }
     if (route === "/shots") {
       const batchIds = q.get("beanId") ? new Set(batches.filter((x) => x.beanId === q.get("beanId")).map((x) => x.id)) : null;
       const all = [...shots.values()].filter((s) => {
@@ -449,6 +468,38 @@ describe("Bean Journal plugin", () => {
     busy.shots.set("s1", makeShot("s1", -60));
     expect((await busy.control({ action: "load-shot", shotId: "s1" })).data.code).toBe("machineBusy");
     expect((await busy.control({ action: "next-settings", grind: "3" })).data.code).toBe("machineBusy");
+  });
+
+  it("adds, edits and puts away grinders (never deletes one), and keeps the list of waters", async () => {
+    const t = setup();
+    const made = (await t.ok({ action: "save-grinder", model: "  Niche   Zero ", burrs: "63 mm", settingSmallStep: 1 })).grinder;
+    expect(made).toMatchObject({ model: "Niche Zero", burrs: "63 mm", settingSmallStep: 1, rpmSmallStep: null, archived: false });
+    expect((await t.control({ action: "save-grinder", model: "lagom 01" })).data.code).toBe("grinderExists");
+    expect((await t.control({ action: "save-grinder", model: "old GRINDER" })).data.code).toBe("grinderExists");
+    expect((await t.control({ action: "save-grinder", model: "" })).status).toBe(400);
+    expect((await t.control({ action: "save-grinder", model: "X", rpmSmallStep: -5 })).status).toBe(400);
+    expect((await t.control({ action: "save-grinder", id: "nope", burrs: "x" })).data.code).toBe("grinderNotFound");
+    const edited = (await t.ok({ action: "save-grinder", id: made.id, model: "Niche Zero", burrs: null, rpmSmallStep: 50 })).grinder;
+    expect(edited).toMatchObject({ id: made.id, model: "Niche Zero", burrs: "", settingSmallStep: 1, rpmSmallStep: 50 });
+    expect(t.calls.filter((c) => c.method === "PUT" && c.url.endsWith(`/grinders/${made.id}`)).at(-1)?.body).toEqual({ model: "Niche Zero", burrs: null, rpmSmallStep: 50 });
+
+    expect((await t.ok({ action: "archive-grinder", id: made.id, archived: true })).grinder).toMatchObject({ archived: true });
+    expect((await t.ok({ action: "grinders" })).grinders.map((g: ObjectData) => g.id)).toEqual(["g-lagom"]);
+    expect((await t.ok({ action: "grinders", includeArchived: true })).grinders.map((g: ObjectData) => [g.id, g.archived]))
+      .toEqual([["g-lagom", false], ["g-old", true], [made.id, true]]);
+    await t.ok({ action: "archive-grinder", id: made.id, archived: false });
+    expect((await t.control({ action: "archive-grinder", id: made.id })).status).toBe(400);
+    expect(t.calls.some((c) => c.method === "DELETE")).toBe(false);
+
+    expect((await t.ok({ action: "save-water", name: "Volvic" })).waters).toEqual(["Volvic"]);
+    expect((await t.ok({ action: "save-water", name: " Lotus\tLight " })).waters).toEqual(["Lotus Light", "Volvic"]);
+    expect((await t.control({ action: "save-water", name: "volvic" })).data.code).toBe("waterExists");
+    expect((await t.ok({ action: "save-water", name: "Volvic Natural", previous: "volvic" })).waters).toEqual(["Lotus Light", "Volvic Natural"]);
+    expect((await t.control({ action: "save-water", name: "Y", previous: "Gone" })).status).toBe(404);
+    expect((await t.ok({ action: "remove-water", name: "lotus light" })).waters).toEqual(["Volvic Natural"]);
+    expect((await t.control({ action: "remove-water", name: "Gone" })).status).toBe(404);
+    expect(t.store.get("beanJournal/waters")).toEqual(["Volvic Natural"]);
+    expect((await t.ok({ action: "waters" })).waters).toEqual(["Volvic Natural"]);
   });
 
   it("walks the shots, notices a new one, and deletes one only when confirmed", async () => {

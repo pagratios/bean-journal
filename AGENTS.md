@@ -51,6 +51,8 @@ its key-value store). Build, test, install and preview steps are in `README.md`;
   5 with ticks and no preset chips. Taste and body share one line as joined buttons.
 - Streamline's header button opens the Shot page full screen over the dashboard (the coffee picker when no coffee is
   chosen). Settings → "When I choose a coffee" keeps the settings or loads the coffee's last/best shot.
+- The next shot's grinder, RPM and water are chosen only from Streamline's line under Grind (the page's top bar has
+  just the coffee). Grinders (put away = archived) and the waters list are kept in Settings.
 - Finished bags: listed last and greyed; the picker and the Coffees list show them with the "Finished" switch.
 - Bean photos are the plugin's own (taken or chosen on the tablet, in Decaid's store); Streamline's header shows
   no image.

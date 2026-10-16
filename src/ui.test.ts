@@ -64,6 +64,7 @@ describe("the page", () => {
   it("uses the contract's actions", () => {
     for (const action of ["status", "coffees", "coffee", "save-coffee", "add-bag", "set-photo", "select", "choose-coffee", "shot", "shots",
       "shot-by-id", "latest", "rate-shot", "assign-coffee", "delete-shot", "load-shot", "next-settings", "grinders", "waters",
+      "save-grinder", "archive-grinder", "save-water", "remove-water",
       "update-preferences", "shot-text", "mcp"]) {
       expect(source).toContain(`api("${action}"`);
     }
