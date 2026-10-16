@@ -16,7 +16,7 @@ a long-press menu item, a screensaver button and overlay pages, from small to fu
 | Where | What |
 | --- | --- |
 | Header | The coffee for the next shot (and its roaster). Opens Bean Journal full screen over the dashboard; with no coffee chosen, the coffee picker. |
-| Grind | "Last 1.8": the grind of this coffee's last shot, a tap sets it. Under the label: the next shot's grinder · RPM · water, which opens a small card to change them. |
+| Grind | "Last 1.8": the grind of this coffee's last shot, a tap sets it. Under the label: the next shot's grinder · RPM · water, which opens a small card to choose them. |
 | Dose | A ±1 / 0.5 / 0.1 g step pill for the − / + buttons, and ⚖ Scale, which sets the dose from the scale. |
 | Drink | 🔒 Ratio (Keep ratio: a new dose moves the drink weight with it, in the same write), a step pill, and a tap on "(1:2.2)" opens the numpad for a new ratio. |
 | During an espresso | Above the chart: the step, puck temperature, pressure and flow against their goals (with a dot), the weight flow, and the weight against the drink with a bar. |
@@ -40,9 +40,11 @@ a long-press menu item, a screensaver button and overlay pages, from small to fu
 - **Add / edit a coffee**: roaster, name, country, region, producer, farm, varieties, altitude, process, decaf, tasting
   notes, the roaster's page; and for the bag: roast date and level, weight and grams left, frozen with its dates,
   opened, best before, notes. A photo taken with the tablet's camera or chosen from its gallery.
-- **Next shot** (the bar at the top): the coffee (the picker) and the grinder, RPM and water.
+- **Next shot** (the bar at the top): the coffee (the picker). Its grinder, RPM and water are chosen from Streamline's
+  line under Grind.
 - **Settings**: "When I choose a coffee" (keep the settings, or load the coffee's last or best shot), "Add Bean Journal
-  details to shot notes" (see Visualizer), and the R2 search.
+  details to shot notes" (see Visualizer), the R2 search, Decaid's **grinders** (add, edit, put away, restore) and the
+  list of **waters** the water field offers (add, rename, remove).
 - **AI**: the MCP endpoint's access level, tokens and connection details (below).
 
 Streamline with DYE2 on clears the coffee, grinder and RPM after each shot; Bean Journal puts the next shot's back.
@@ -54,11 +56,12 @@ Streamline with DYE2 on clears the coffee, grinder and RPM after each shot; Bean
 | A coffee | A bean: roaster, name, country, region, producer, varieties, altitude, process, decaf, notes (the tasting notes); species and decaf process (set by assistants). The farm and roaster's page go in its `extras.beanJournal`. |
 | A bag | A bean batch: roast date and level, weight, grams left (Decaid takes each shot's dose off), frozen and its dates, opened, best before, notes; harvest, cupping score, price and currency, buy date (set by assistants). Finished = archived. |
 | A photo | The key-value store, `beanJournal-photos/<bean id>`: a resized JPEG, or an https image address an assistant gave (the page shows it from the web). |
-| Waters | The next shot's in the workflow (`context.extras.beanJournal.water`), each shot's in its annotations; the recent ones in `beanJournal/waters`. |
+| Waters | The next shot's in the workflow (`context.extras.beanJournal.water`), each shot's in its annotations; the list (recent ones first, kept in Settings) in `beanJournal/waters`. |
 | Old bags offered | `beanJournal/oldBags` in the key-value store, once answered. |
 | A shot's rating | Decaid's own fields: `enjoyment` (score ÷ 10), `espressoNotes`, `drinkTds`, `drinkEy`, actual dose and yield; taste and body in `annotations.extras.beanJournal`. Grinder, grind and RPM (`extras.rpm`) on the shot's workflow context. |
 
-Bean Journal never deletes beans, batches or grinders. It deletes a shot only when you confirm it.
+Bean Journal never deletes beans, batches or grinders: a grinder put away in Settings is archived in Decaid (shots
+made with it keep it). It deletes a shot only when you confirm it.
 
 ## Visualizer
 

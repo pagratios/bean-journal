@@ -100,6 +100,8 @@ function client(t: Copy) {
   const same = (a: string, b: string) => a.trim().toLocaleLowerCase(locale) === b.trim().toLocaleLowerCase(locale);
   const grinderNamed = (text: string) => text.trim() ? grinders.find((g) => same(g.model, text)) ?? null : null;
   const grinderText = (id: string | null, model: string) => model || grinders.find((g) => g.id === id)?.model || "";
+  // RPM is whole numbers: a fractional step (set in another app) would round back to where it was.
+  const rpmStepOf = (g: Grinder | null | undefined) => Math.max(1, Math.round(g?.rpmSmallStep || 10));
   // The shot on screen has edits that Done hasn't stored yet (renderShot clears it).
   let unsaved = false;
   let saveShot: (() => Promise<boolean>) | null = null;
@@ -317,6 +319,7 @@ function client(t: Copy) {
   function closeDropdown() {
     document.querySelector(".dd-layer")?.remove();
     document.querySelectorAll("[data-open]").forEach((n) => { n.removeAttribute("data-open"); n.setAttribute("aria-expanded", "false"); });
+    document.querySelectorAll<HTMLElement>("dialog.next-gear").forEach((d) => { d.style.minHeight = ""; });
   }
   type MenuItem = { label: string; value: string; selected?: boolean; disabled?: boolean; hint?: boolean };
   function openMenu(anchor: HTMLElement, toggle: HTMLElement, items: MenuItem[], onPick: (value: string) => void) {
@@ -348,10 +351,14 @@ function client(t: Copy) {
     menu.style.maxHeight = `${Math.max(120, down ? below : above)}px`;
     menu.style.left = `${Math.max(margin, Math.min(r.left, innerWidth - margin - Math.max(r.width, menu.offsetWidth)))}px`;
     if (down) menu.style.top = `${r.bottom + gap}px`; else menu.style.bottom = `${innerHeight - r.top + gap}px`;
-    // The gear card alone in Streamline's overlay is the whole frame: a list there uses all of its height.
-    if (document.documentElement.classList.contains("gear-only")) {
-      menu.style.top = `${margin}px`; menu.style.bottom = "";
-      menu.style.maxHeight = `${innerHeight - 2 * margin}px`;
+    // The gear card alone in Streamline's overlay is the whole frame, too short for a list: the card grows under the
+    // field for it (the overlay follows the card's size), so the list opens right under its field.
+    const card = document.documentElement.classList.contains("gear-only") ? anchor.closest<HTMLElement>("dialog.next-gear") : null;
+    if (card) {
+      const height = Math.min(menu.scrollHeight, 360), top = r.bottom + gap;
+      card.style.minHeight = `${Math.ceil(top + height + margin - card.getBoundingClientRect().top)}px`;
+      menu.style.top = `${top}px`; menu.style.bottom = "";
+      menu.style.maxHeight = `${height}px`;
     }
     (menu.querySelector<HTMLElement>("[aria-selected=true]") ?? menu.firstElementChild as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
   }
@@ -426,7 +433,8 @@ function client(t: Copy) {
   }).observe(document.body, { childList: true, subtree: true });
   document.querySelectorAll("select").forEach(enhanceSelect);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.querySelector(".dd-layer")) { e.stopPropagation(); e.preventDefault(); closeDropdown(); } }, true);
-  addEventListener("resize", closeDropdown);
+  // Alone in the overlay the frame resizes only to fit the gear card, as it grows for an open list.
+  addEventListener("resize", () => { if (!document.documentElement.classList.contains("gear-only")) closeDropdown(); });
 
   // ── Messages: the page's own dialog, in its theme, instead of the system's confirm(). ──
   // Resolves with the chosen value; Esc or a tap outside the box gives `dismiss`.
@@ -590,14 +598,13 @@ function client(t: Copy) {
     try { status = await api("status"); } catch (e) { if (!quiet) say(e instanceof Error ? e.message : t.failed, "error"); }
     renderNext();
   }
-  const gearLine = (next: Data) => [str(next.grinderModel), num(next.rpm) ? t.skin.rpm.replace("{rpm}", fmt(num(next.rpm), 0)) : "", str(next.water)]
-    .filter(Boolean).join(" · ");
   function renderNext() {
     const box = $("next-coffee");
     box.replaceChildren();
     const coffee = nextCoffee();
     const name = coffee?.name || str(status.coffeeName), roaster = coffee?.roaster || str(status.coffeeRoaster);
-    // The coffee opens the list to choose the next shot's; the gear opens its card; × stops using the coffee.
+    // The coffee opens the list to choose the next shot's; × stops using the coffee. The next shot's grinder, RPM and
+    // water are set from Streamline's line under Grind.
     const pickIt = el("button", "next-pick") as HTMLButtonElement;
     pickIt.type = "button";
     pickIt.onclick = () => { void run(async () => { await openPicker("next"); }); };
@@ -612,14 +619,7 @@ function client(t: Copy) {
       pickIt.title = [name, roaster].filter(Boolean).join(" · ");
       pickIt.append(label, photo(coffee?.beanId, coffee ? coffee.photo : null, "thumb"), text);
     }
-    const gear = el("button", "next-gear-btn ellipsis") as HTMLButtonElement;
-    gear.type = "button";
-    const line = gearLine((status.next ?? {}) as Data);
-    gear.textContent = line || t.gearNone;
-    gear.classList.toggle("muted", !line);
-    gear.title = t.nextGear;
-    gear.onclick = () => { void run(openNextGear); };
-    box.append(pickIt, gear);
+    box.append(pickIt);
     if (name) {
       const stop = button("✕", async () => {
         if (!(await confirmIt(t.confirmClearCoffee.replace("{name}", name), t.clearCoffee))) return;
@@ -1059,7 +1059,7 @@ function client(t: Copy) {
     };
     grindField.minus.onclick = () => nudgeGrind(-1);
     grindField.plus.onclick = () => nudgeGrind(1);
-    const rpmField = stepper(s.rpm, () => grinderNow()?.rpmSmallStep || 10, 0, t.rpm);
+    const rpmField = stepper(s.rpm, () => rpmStepOf(grinderNow()), 0, t.rpm);
     const rpmIn = rpmField.input;
     rpmIn.inputMode = "numeric";
     cell(t.grinder, grinder.box, true);
@@ -1997,6 +1997,8 @@ function client(t: Copy) {
       }).catch(() => { /* the switch stays as it is */ });
     }
     void loadR2();
+    void loadGrinderRows();
+    void loadWaterRows();
   }
   async function updatePreferences(patch: Data) {
     const value = await api("update-preferences", patch);
@@ -2006,6 +2008,150 @@ function client(t: Copy) {
     await reloaded();
     say(t.saved);
   }
+
+  // ── Grinders (Decaid's own) and waters (the list the water field offers), kept in Settings ──
+  // A small card of fields over the page. Save runs `save`; what goes wrong is said in the card (the page's notice is
+  // under the dialog).
+  function editCard(title: string, fields: HTMLElement[], save: () => Promise<void>) {
+    closeDropdown();
+    const d = el("dialog", "msg edit-card") as HTMLDialogElement;
+    const box = el("div", "msg-box"), grid = el("div", "gear-grid"), row = el("div", "msg-actions");
+    const problem = el("p", "set-hint set-error");
+    problem.hidden = true;
+    grid.append(...fields);
+    const cancel = el("button", "secondary", t.cancel) as HTMLButtonElement;
+    cancel.type = "button";
+    cancel.onclick = () => d.close();
+    const ok = el("button", "", t.save) as HTMLButtonElement;
+    ok.type = "button";
+    ok.onclick = () => { void run(async () => {
+      problem.hidden = true;
+      try { await save(); d.close(); } catch (e) { problem.textContent = e instanceof Error ? e.message : t.failed; problem.hidden = false; }
+    }); };
+    row.append(cancel, ok);
+    box.append(el("h2", "", title), grid, problem, row);
+    d.append(box);
+    d.addEventListener("pointerdown", (e) => { if (e.target === d) { e.preventDefault(); d.close(); } });
+    d.addEventListener("close", () => { d.remove(); closeDropdown(); });
+    document.body.append(d);
+    d.showModal();
+  }
+  function cardField(label: string, input: HTMLInputElement, wide = false) {
+    const f = el("label", wide ? "field wide" : "field");
+    f.append(el("span", "label", label), input);
+    return f;
+  }
+  function textField(value: string, placeholder = "") {
+    const input = el("input") as HTMLInputElement;
+    input.type = "text"; input.maxLength = 80; input.value = value; input.placeholder = placeholder; input.autocomplete = "off";
+    return input;
+  }
+  // `whole`: RPM's step, a whole number (one Decaid has with a fraction shows rounded, as − / + use it).
+  function stepField(value: number | null, whole = false) {
+    const input = el("input") as HTMLInputElement;
+    input.type = "number"; input.min = whole ? "1" : "0"; input.step = whole ? "1" : "any"; input.inputMode = whole ? "numeric" : "decimal";
+    input.value = value === null ? "" : String(whole ? Math.max(1, Math.round(value)) : value); input.placeholder = t.stepPlaceholder;
+    return input;
+  }
+  // Empty: no step (Decaid's default); undefined: not a step.
+  const readStep = (input: HTMLInputElement, whole = false) => {
+    if (input.value.trim() === "") return null;
+    const v = readNum(input);
+    return v !== null && v > 0 && (!whole || Number.isInteger(v)) ? v : undefined;
+  };
+  function settingsRow(title: string, hint: string, className = "") {
+    const row = el("div", `set-row${className ? ` ${className}` : ""}`), text = el("span", "set-text"), control = el("span", "set-control");
+    text.append(el("span", "set-title", title));
+    if (hint) text.append(el("span", "set-hint", hint));
+    row.append(text, control);
+    return { row, control };
+  }
+  function smallButton(label: string, onClick: () => void) {
+    const b = el("button", "secondary small", label) as HTMLButtonElement;
+    b.type = "button";
+    b.onclick = onClick;
+    return b;
+  }
+  async function loadGrinderRows() {
+    const box = $("grinder-rows");
+    let rows: Data[];
+    try { rows = list((await api("grinders", { includeArchived: true })).grinders); }
+    catch (e) { box.replaceChildren(el("p", "set-list-empty set-error", e instanceof Error ? e.message : t.failed)); return; }
+    // Put-away ones last, each part by name.
+    rows.sort((a, b) => Number(a.archived === true) - Number(b.archived === true) || str(a.model).localeCompare(str(b.model), locale));
+    box.replaceChildren(...(rows.length ? rows.map(grinderRow) : [el("p", "set-list-empty", t.noGrinders)]));
+  }
+  function grinderRow(g: Data) {
+    const model = str(g.model), away = g.archived === true;
+    const grindStep = num(g.settingSmallStep), rpmStep = num(g.rpmSmallStep);
+    const hint = [str(g.burrs), grindStep !== null ? `${t.grindStep} ${fmt(grindStep, 3)}` : "", rpmStep !== null ? `${t.rpmStep} ${fmt(rpmStep, 0)}` : "",
+      away ? t.putAwayBadge : ""].filter(Boolean).join(" · ");
+    const { row, control } = settingsRow(model, hint, away ? "put-away" : "");
+    const archive = (archived: boolean) => button(archived ? t.putAway : t.restore, async () => {
+      if (archived && !(await confirmIt(t.confirmPutAway.replace("{name}", model), t.putAway))) return;
+      await api("archive-grinder", { id: str(g.id), archived });
+      grindersAt = 0;
+      await loadGrinderRows();
+      say((archived ? t.grinderPutAway : t.grinderRestored).replace("{name}", model));
+    }, "secondary small");
+    if (away) control.append(archive(false));
+    else control.append(smallButton(t.edit, () => grinderCard(g)), archive(true));
+    return row;
+  }
+  // A new grinder (g null) or one of Decaid's: only what changed is sent.
+  function grinderCard(g: Data | null) {
+    const model = textField(str(g?.model)), burrs = textField(str(g?.burrs), t.burrsPlaceholder);
+    const grindStep = stepField(num(g?.settingSmallStep)), rpmStep = stepField(num(g?.rpmSmallStep), true);
+    model.setAttribute("aria-label", t.name);
+    editCard(g ? t.editGrinder : t.addGrinder,
+      [cardField(t.name, model, true), cardField(t.burrs, burrs, true), cardField(t.grindStep, grindStep), cardField(t.rpmStep, rpmStep)], async () => {
+        const name = model.value.trim(), steps = [readStep(grindStep), readStep(rpmStep, true)];
+        if (!name || steps.some((s) => s === undefined)) throw new Error(t.badGrinder);
+        const body: Data = {};
+        if (!g || name !== str(g.model)) body.model = name;
+        if (burrs.value.trim() !== str(g?.burrs)) body.burrs = burrs.value.trim() || null;
+        if (steps[0] !== num(g?.settingSmallStep)) body.settingSmallStep = steps[0];
+        if (steps[1] !== num(g?.rpmSmallStep)) body.rpmSmallStep = steps[1];
+        if (g && !Object.keys(body).length) return;
+        await api("save-grinder", g ? { id: str(g.id), ...body } : body);
+        grindersAt = 0;
+        await loadGrinderRows();
+        say(t.saved);
+      });
+  }
+  function setWaters(value: unknown) {
+    waters = Array.isArray(value) ? value.map(str).filter(Boolean) : [];
+    watersAt = Date.now();
+    const box = $("water-rows");
+    box.replaceChildren(...(waters.length ? waters.map(waterRow) : [el("p", "set-list-empty", t.noWaters)]));
+  }
+  async function loadWaterRows() {
+    try { setWaters((await api("waters")).waters); }
+    catch (e) { $("water-rows").replaceChildren(el("p", "set-list-empty set-error", e instanceof Error ? e.message : t.failed)); }
+  }
+  function waterRow(name: string) {
+    const { row, control } = settingsRow(name, "");
+    control.append(smallButton(t.rename, () => waterCard(name)), button(t.remove, async () => {
+      if (!(await confirmIt(t.confirmRemoveWater.replace("{name}", name), t.remove))) return;
+      setWaters((await api("remove-water", { name })).waters);
+      say(t.waterRemoved.replace("{name}", name));
+    }, "secondary small"));
+    return row;
+  }
+  // A new water (previous null), or one renamed in place on the list.
+  function waterCard(previous: string | null) {
+    const input = textField(previous ?? "");
+    input.setAttribute("aria-label", t.water);
+    editCard(previous ? t.renameWater : t.addWater, [cardField(t.name, input, true)], async () => {
+      const name = input.value.trim();
+      if (!name) throw new Error(t.errors.invalidArguments);
+      if (name === previous) return;
+      setWaters((await api("save-water", { name, ...(previous ? { previous } : {}) })).waters);
+      say(t.saved);
+    });
+  }
+  $("grinder-add").onclick = () => grinderCard(null);
+  $("water-add").onclick = () => waterCard(null);
 
   // ── AI assistants (MCP) ──
   let mcp: Data = {}, mcpShown = false, mcpPublicShown = false;
@@ -2205,7 +2351,7 @@ function client(t: Copy) {
       const grinderStart = grinderText(str(next.grinderId) || null, str(next.grinderModel));
       const grinder = grinderInput(grinderStart);
       cell(t.grinder, grinder.box, true);
-      const rpm = stepper(num(next.rpm), () => grinderNamed(grinder.input.value)?.rpmSmallStep || 10, 0, t.rpm);
+      const rpm = stepper(num(next.rpm), () => rpmStepOf(grinderNamed(grinder.input.value)), 0, t.rpm);
       rpm.input.inputMode = "numeric";
       cell(t.rpm, rpm.box);
       const waterStart = str(next.water);
@@ -2415,10 +2561,9 @@ dialog.msg.old-bags{width:min(44rem,94vw)}.old-bags h2{margin:0 0 0.533rem;font-
 .notice{position:fixed;left:50%;bottom:4.4rem;transform:translateX(-50%);z-index:70;max-width:min(92vw,48rem);border-radius:0.667rem;padding:0.533rem 0.933rem;white-space:pre-wrap;box-shadow:0 0.267rem 1.2rem rgb(0 0 0/.22)}.notice:empty{display:none}.notice.error{background:var(--warn-bg);color:var(--warn-ink);border:1px solid var(--warn-line)}.notice.info{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok)}
 #shot-body>.notice,#grid>.notice,#coffee-detail>.notice{position:static;transform:none;margin:1rem 0.933rem;box-shadow:none}
 .panel{background:var(--surface);border:1px solid var(--ui-divider);border-radius:0.8rem;padding:0.667rem 0.8rem}
-/* The next shot: its coffee (opens the list), its grinder · RPM · water (opens their card), and × to stop using it. */
+/* The next shot: its coffee (opens the list) and × to stop using it. */
 #next-coffee{flex:0 1 auto;margin-left:auto;min-width:0;display:flex;gap:0.267rem;align-items:center;padding:0.2rem 0.267rem;border-radius:0.533rem;background:var(--surface)}
-#next-coffee .eyebrow{color:var(--muted)}.next-pick,.next-gear-btn{display:flex;align-items:center;gap:0.533rem;min-width:0;background:transparent;color:var(--ink);font-weight:400;padding:0.2rem 0.533rem}
-.next-pick{flex:0 1 auto}.next-gear-btn{flex:0 2 auto;max-width:18rem;display:block;border-left:1px solid var(--ui-divider);border-radius:0;color:var(--ink);font-size:0.933rem}.next-gear-btn.muted{color:var(--muted)}
+#next-coffee .eyebrow{color:var(--muted)}.next-pick{display:flex;align-items:center;gap:0.533rem;min-width:0;background:transparent;color:var(--ink);font-weight:400;padding:0.2rem 0.533rem;flex:0 1 auto}
 .next-name{min-width:0}button.icon{min-height:2.133rem;width:2.133rem;padding:0;border-radius:50%;font-size:0.9rem;line-height:1;flex:none;background:transparent}
 .thumb{position:relative;width:2.4rem;height:2.4rem;border-radius:0.533rem;overflow:hidden;flex:none;background:var(--surface-2);display:grid;place-items:center}
 .thumb img,.photo img,.hero img,.photo-edit img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}.nophoto{font-size:1.333rem;opacity:.6}
@@ -2536,6 +2681,11 @@ dialog.form-dialog.bag-only{width:min(36rem,96vw);height:auto}.bag-only .coffee-
 input.sw{appearance:none;-webkit-appearance:none;flex:none;position:relative;width:2.933rem;height:1.733rem;margin:0;padding:0;border:0;border-radius:66.6rem;background:var(--track);cursor:pointer;transition:background .15s}
 input.sw::before{content:"";position:absolute;top:0.2rem;left:0.2rem;width:1.333rem;height:1.333rem;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgb(0 0 0/.3);transition:transform .15s}input.sw:checked{background:var(--accent)}input.sw:checked::before{transform:translateX(1.2rem)}
 .form-row{display:flex;gap:0.533rem;flex-wrap:wrap;align-items:center;margin:0.4rem 0}
+/* Grinders and waters: the group's title with its Add beside it; put-away grinders last and greyed. */
+.set-head{display:flex;align-items:center;justify-content:space-between;gap:0.533rem;margin-top:1.2rem}.set-head>.set-group{margin:0}
+.set-row.put-away .set-text{opacity:.55}.set-list-empty{margin:0.533rem 0;color:var(--muted)}
+.edit-card h2{margin:0 0 0.8rem;font-size:1.133rem}.edit-card .gear-grid .field>input{min-height:2.533rem}
+.edit-card input[type=number]{-moz-appearance:textfield}.edit-card input::-webkit-outer-spin-button,.edit-card input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 body.embedded header h1{display:none}
 /* Stock Streamline draws its × (44px, 8px from the corner) over the page's top right. */
 body.embedded header{padding-right:calc(60px + 0.4rem)}
@@ -2549,7 +2699,7 @@ html.gear-only,html.gear-only body{background:transparent!important;color-scheme
 .gear-only dialog.msg.next-gear{margin:0;width:34rem;max-width:none;box-shadow:none}.gear-only .next-gear h2{padding-right:2.4rem}
 [hidden]{display:none!important}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 /* Hover only where there is a pointer; on the tablet a tap shows the pressed state instead. */
-@media (hover:hover){button.secondary:not(:disabled):hover,.seg .toggle:not([aria-pressed=true]):hover,.card:not(:disabled):hover,nav button:not([aria-selected=true]):hover,.filters .dd:not(.active):hover,.next-pick:hover,.next-gear-btn:hover{background:var(--ui-hover)}}
+@media (hover:hover){button.secondary:not(:disabled):hover,.seg .toggle:not([aria-pressed=true]):hover,.card:not(:disabled):hover,nav button:not([aria-selected=true]):hover,.filters .dd:not(.active):hover,.next-pick:hover{background:var(--ui-hover)}}
 @media (prefers-reduced-motion:reduce){button,.button,input.sw,input.sw::before,.dd-chevron,.combo-open svg{transition:none}.r2.measuring svg{animation:none}}
 @media (max-width:60rem){header{flex-wrap:wrap}#next-coffee{flex-basis:100%;order:3;margin-left:0}#view-shot{grid-template-columns:1fr;grid-template-rows:auto auto minmax(0,1fr)}.shot-bar,#shot-body>.chart-wrap,.shot-side{grid-column:1;grid-row:auto}.numbers{grid-template-columns:repeat(3,1fr)}.form-cols{grid-template-columns:1fr}}
 </style></head><body>
@@ -2582,6 +2732,12 @@ html.gear-only,html.gear-only body{background:transparent!important;color-scheme
 <h2 class="set-group">${esc(t.r2Title)}</h2>
 <div class="set-row"><span class="set-text"><span class="set-title" id="r2-state"></span><span class="set-hint">${esc(t.r2Help)}</span></span>
 <span class="set-control"><button type="button" id="r2-search" class="secondary small">${esc(t.r2Search)}</button></span></div>
+<div class="set-head"><h2 class="set-group">${esc(t.groupGrinders)}</h2><button type="button" id="grinder-add" class="secondary small">+ ${esc(t.addGrinder)}</button></div>
+<p class="set-hint set-intro">${esc(t.grindersHelp)}</p>
+<div id="grinder-rows"></div>
+<div class="set-head"><h2 class="set-group">${esc(t.groupWaters)}</h2><button type="button" id="water-add" class="secondary small">+ ${esc(t.addWater)}</button></div>
+<p class="set-hint set-intro">${esc(t.watersHelp)}</p>
+<div id="water-rows"></div>
 </div></div></section>
 <section id="view-ai" hidden><div class="settings">
 <div class="set-col">
