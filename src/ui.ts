@@ -259,7 +259,8 @@ function client(t: Copy) {
   }
   const list = (v: unknown) => Array.isArray(v) ? v.filter((x): x is Data => typeof x === "object" && x !== null) : [];
 
-  // ── Photos: Decaid's store keeps each coffee's photo (a JPEG data URL); read lazily, kept by the coffee's stamp. ──
+  // ── Photos: Decaid's store keeps each coffee's photo (a JPEG data URL, or an https address an assistant gave); read
+  // lazily, kept by the coffee's stamp. ──
   const photoCache = new Map<string, Promise<string | null>>();
   function photoOf(beanId: string, stamp: string | null | undefined): Promise<string | null> {
     if (!beanId || stamp === null) return Promise.resolve(null);
@@ -269,7 +270,7 @@ function client(t: Copy) {
     if (!value) {
       value = fetch(`/api/v1/store/beanJournal-photos/${encodeURIComponent(beanId)}`)
         .then((r) => r.ok ? r.json() : null)
-        .then((v) => typeof v === "string" && v.startsWith("data:image/") ? v : null)
+        .then((v) => typeof v === "string" && (v.startsWith("data:image/") || v.startsWith("https://")) ? v : null)
         .catch(() => { photoCache.delete(key); return null; });
       photoCache.set(key, value);
     }
@@ -1390,6 +1391,59 @@ function client(t: Copy) {
     coffees = list(value.coffees).map(asCoffee).filter((c) => c.id);
     coffeesLoaded = true;
     renderFilters();
+    void offerOldBags();
+  }
+  // ── Old bags: a long imported list is offered for finishing once, the bags with grams left unticked. ──
+  let oldBagsOffered = false;
+  async function offerOldBags() {
+    if (oldBagsOffered) return;
+    oldBagsOffered = true;
+    let bags: { coffee: Coffee; lastDate: string | null }[];
+    try { bags = list((await api("old-bags")).bags).map((o) => ({ coffee: asCoffee(o), lastDate: str(o.lastDate) || null })).filter((x) => x.coffee.id); }
+    catch { return; /* asked again next time the page opens */ }
+    if (!bags.length) return;
+    closeDropdown();
+    const d = el("dialog", "msg old-bags") as HTMLDialogElement;
+    const box = el("div", "msg-box"), rows = el("div", "old-list"), actions = el("div", "msg-actions");
+    const chosen = new Set<string>();
+    const finish = el("button", "", "") as HTMLButtonElement;
+    finish.type = "button";
+    const count = () => { finish.textContent = t.oldBagsFinish.replace("{n}", String(chosen.size)); finish.disabled = !chosen.size; };
+    for (const { coffee: c, lastDate } of bags) {
+      const row = el("label", "old-row"), sw = el("input", "sw") as HTMLInputElement;
+      sw.type = "checkbox";
+      sw.checked = !(c.remaining && c.remaining > 0);
+      if (sw.checked) chosen.add(c.id);
+      sw.onchange = () => { if (sw.checked) chosen.add(c.id); else chosen.delete(c.id); count(); };
+      const name = el("span", "old-name", [c.roaster, c.name].filter(Boolean).join(" · "));
+      const facts = [lastDate ? date(lastDate) : t.oldBagsNoDate, c.remaining && c.remaining > 0 ? t.oldBagsLeft.replace("{g}", String(c.remaining)) : ""];
+      row.append(sw, name, el("span", "old-when muted", facts.filter(Boolean).join(" · ")));
+      rows.append(row);
+    }
+    let finished = false;
+    const keep = el("button", "secondary", t.oldBagsKeep) as HTMLButtonElement;
+    keep.type = "button";
+    keep.onclick = () => d.close();
+    finish.onclick = () => { void run(async () => {
+      const value = await api("finish-old-bags", { ids: [...chosen], confirmed: true });
+      finished = true;
+      d.close();
+      say(t.oldBagsDone.replace("{n}", String(num(value.finished) ?? 0)));
+      await ensureCoffees(true);
+      renderCoffees();
+      if (($("picker") as HTMLDialogElement).open) renderPicker();
+    }); };
+    count();
+    actions.append(keep, finish);
+    box.append(el("h2", "", t.oldBagsTitle), el("p", "msg-text", t.oldBagsText.replace("{n}", String(bags.length))), rows, actions);
+    d.append(box);
+    // Kept all (the button or Esc): not asked again. A tap beside the box does nothing, so it isn't lost by accident.
+    d.addEventListener("close", () => {
+      d.remove();
+      if (!finished) void api("finish-old-bags", { ids: [] }).catch(() => { /* asked again next time */ });
+    });
+    document.body.append(d);
+    d.showModal();
   }
   function renderFilters() {
     fillFilters($("coffee-filters"), coffeeFilter, renderCoffees);
@@ -2496,6 +2550,10 @@ dialog.msg{width:min(34rem,92vw);max-height:none;padding:0;background:var(--surf
 dialog.msg::backdrop{background:rgb(0 0 0/.35)}.msg-box{padding:1.067rem 1.067rem 0.8rem}.msg-text{margin:0 0 1.067rem;font-size:1.067rem;white-space:pre-wrap}
 .msg-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:0.533rem}.msg-actions button{min-width:6.4rem}.msg-actions .discard{margin-right:auto;color:var(--warn-ink)}
 body.busy dialog.msg button{pointer-events:auto;opacity:1}
+dialog.msg.old-bags{width:min(44rem,94vw)}.old-bags h2{margin:0 0 0.533rem;font-size:1.133rem}.old-bags .msg-text{margin-bottom:0.667rem;font-size:0.933rem}
+.old-list{max-height:min(22rem,50vh);overflow:auto;margin:0 0 0.8rem;border-top:1px solid var(--ui-divider);border-bottom:1px solid var(--ui-divider)}
+.old-row{display:flex;align-items:center;gap:0.667rem;padding:0.4rem 0.267rem;border-bottom:1px solid var(--ui-divider);cursor:pointer}.old-row:last-child{border-bottom:0}
+.old-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.old-when{flex:none;font-size:0.867rem}
 .eyebrow{white-space:nowrap;font-size:0.733rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}.muted{color:var(--muted)}.grow{flex:1;min-width:0}
 .ellipsis{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .label{display:block;font-size:0.8rem;color:var(--muted);margin-bottom:2px}

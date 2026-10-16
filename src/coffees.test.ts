@@ -1,20 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { batchBody, beanBody, coffeeInput, coffeeOf, coffeeRef, coffeesOf, day, decaidDay, matchesSearch, mergedExtras, sameCoffee, today } from "./coffees";
+import { bagLastDate, batchBody, beanBody, coffeeInput, coffeeOf, coffeeRef, coffeesOf, day, decaidDay, matchesSearch, mergedExtras, oldBags, sameCoffee, today } from "./coffees";
 
 const bean = (id: string, more: Record<string, unknown> = {}) => ({ id, roaster: "Square Mile", name: "Red Brick", decaf: false, archived: false, createdAt: "2026-01-01T10:00:00", ...more });
 const batch = (id: string, beanId: string, more: Record<string, unknown> = {}) => ({ id, beanId, frozen: false, archived: false, createdAt: "2026-02-01T10:00:00", ...more });
 
 describe("Coffees from Decaid's beans and batches", () => {
   it("makes one card per bag, with the bean's details and Decaid's dates as days", () => {
-    const b = bean("b1", { country: "Ethiopia", region: "Guji", producer: "Coop", variety: ["74110", 7], altitude: [1900, 2100], processing: "washed",
+    const b = bean("b1", { country: "Ethiopia", region: "Guji", producer: "Coop", variety: ["74110", 7], altitude: [1900, 2100], processing: "washed", species: "Arabica",
       notes: "Peach", extras: { beanJournal: { farm: "Hambela", link: "https://shop.example/rb", photo: "2026-10-01T10:00:00.000Z" }, beanbox: { bag_id: "x" } } });
     const card = coffeeOf(b, batch("t1", "b1", { roastDate: "2026-10-01T00:00:00", roastLevel: "light", weight: 250, weightRemaining: 180, frozen: true,
-      freezeDate: "2026-10-03T00:00:00", unfreezeDate: null, openDate: "2026-10-04T00:00:00", bestBeforeDate: "2027-01-01T00:00:00", notes: "Bag 1" }));
+      freezeDate: "2026-10-03T00:00:00", unfreezeDate: null, openDate: "2026-10-04T00:00:00", bestBeforeDate: "2027-01-01T00:00:00", notes: "Bag 1",
+      harvestDate: "2025", qualityScore: 86.5, price: 21, currency: "GBP", buyDate: "2026-10-02T00:00:00" }));
     expect(card).toEqual({
       id: "t1", beanId: "b1", batchId: "t1", roaster: "Square Mile", name: "Red Brick", country: "Ethiopia", region: "Guji", producer: "Coop", farm: "Hambela",
       varieties: ["74110"], altitude: [1900, 2100], process: "washed", decaf: false, tastingNotes: "Peach", link: "https://shop.example/rb",
       photo: "2026-10-01T10:00:00.000Z", roastDate: "2026-10-01", roastLevel: "light", weight: 250, remaining: 180, frozen: true, freezeDate: "2026-10-03",
       thawDate: null, openDate: "2026-10-04", bestBefore: "2027-01-01", bagNotes: "Bag 1", finished: false, createdAt: "2026-02-01T10:00:00",
+      species: "Arabica", decafProcess: "", harvestDate: "2025", qualityScore: 86.5, price: 21, currency: "GBP", buyDate: "2026-10-02",
     });
     expect(coffeeOf(bean("b2", { extras: { beanJournal: { link: "http://insecure.example" } } }), null)).toMatchObject({ id: "bean:b2", batchId: null, link: "", photo: null, weight: null });
   });
@@ -47,6 +49,18 @@ describe("Coffees from Decaid's beans and batches", () => {
     expect(() => coffeeRef("bean:../x")).toThrow("invalidId");
   });
 
+  it("finds old bags: in use, not frozen, no recent shot (by bag, else by name) and no recent date of their own", () => {
+    const beans = [bean("b1", { name: "Used" }), bean("b2", { name: "Named" }), bean("b3", { name: "Old" }), bean("b4", { name: "Fresh" }), bean("b5", { name: "Cold" }), bean("b6", { name: "Bare" })];
+    const list = coffeesOf(beans, [
+      batch("t1", "b1", { roastDate: "2026-01-01T00:00:00" }), batch("t2", "b2"), batch("t3", "b3", { roastDate: "2026-06-01T00:00:00", openDate: "2026-06-20T00:00:00" }),
+      batch("t4", "b4", { buyDate: "2026-09-01T00:00:00" }), batch("t5", "b5", { frozen: true }), batch("t6", "b3", { archived: true }),
+    ]);
+    const recent = [{ batchId: "t1", roaster: "", name: "" }, { batchId: null, roaster: "square mile", name: "NAMED" }, { batchId: null, roaster: "", name: "" }];
+    expect(oldBags(list, recent, "2026-07-17").map((c) => c.id).sort()).toEqual(["bean:b6", "t3"]);
+    expect(bagLastDate(list.find((c) => c.id === "t3")!)).toBe("2026-06-20");
+    expect(bagLastDate(list.find((c) => c.id === "t2")!)).toBeNull();
+  });
+
   it("checks the form and converts dates both ways", () => {
     expect(day("2026-10-01T00:00:00")).toBe("2026-10-01");
     expect(day("")).toBeNull();
@@ -56,7 +70,7 @@ describe("Coffees from Decaid's beans and batches", () => {
     expect(coffeeInput({ roaster: " A ", name: "B\nC", varieties: [" X ", ""], altitude: [], link: "", roastDate: "2026-10-01", weight: 250, tastingNotes: null }))
       .toEqual({ roaster: "A", name: "B C", varieties: ["X"], altitude: null, link: null, roastDate: "2026-10-01", weight: 250, tastingNotes: null });
     for (const bad of [{ link: "http://x.example" }, { weight: 0 }, { remaining: -1 }, { altitude: [1, 2, 3] }, { altitude: [1.5] }, { roastDate: "yesterday" },
-      { decaf: "yes" }, { varieties: "x" }, { colour: "red" }, { name: 3 }]) {
+      { decaf: "yes" }, { varieties: "x" }, { colour: "red" }, { name: 3 }, { qualityScore: 101 }, { price: -1 }, { price: "12" }, { buyDate: "soon" }]) {
       expect(() => coffeeInput(bad), JSON.stringify(bad)).toThrow("invalidArguments");
     }
   });
@@ -74,6 +88,7 @@ describe("Writing coffees to Decaid", () => {
       extras: { beanbox: { bag_id: "x" }, beanJournal: { photo: "p", link: "https://a.example" } },
     });
     expect(beanBody(coffeeInput({ country: "Kenya" }), existing)).toEqual({ country: "Kenya" });
+    expect(beanBody(coffeeInput({ species: " Arabica ", decafProcess: null }), existing)).toEqual({ species: "Arabica", decafProcess: null });
     expect(mergedExtras(existing, { photo: null, farm: null })).toEqual({ beanbox: { bag_id: "x" } });
   });
 
@@ -90,5 +105,8 @@ describe("Writing coffees to Decaid", () => {
     expect(batchBody(coffeeInput({ remaining: 100, finished: true }), frozen, "2026-10-16")).toEqual({ body: { weightRemaining: 100, archived: true }, after: {} });
     expect(() => batchBody(coffeeInput({ remaining: 300 }), frozen, "2026-10-16")).toThrow("invalidArguments");
     expect(batchBody(coffeeInput({ openDate: null }), frozen, "2026-10-16").body).toEqual({ openDate: null });
+    expect(batchBody(coffeeInput({ harvestDate: "2025", qualityScore: 86.556, price: 18.499, currency: "EUR", buyDate: "2026-10-01" }), null, "2026-10-16").body)
+      .toEqual({ harvestDate: "2025", qualityScore: 86.56, price: 18.5, currency: "EUR", buyDate: "2026-10-01T00:00:00" });
+    expect(batchBody(coffeeInput({ price: null, currency: "", buyDate: null }), frozen, "2026-10-16").body).toEqual({ price: null, currency: null, buyDate: null });
   });
 });
