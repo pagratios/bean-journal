@@ -1,0 +1,71 @@
+/* Streamline skin tokens (light and dark), so the page looks like the skin it opens in. */
+:root,
+[data-theme="light"] {
+  --bg: #ffffff;
+  --surface: #f8f9fb;
+  --surface-2: #eef2f7;
+  --ink: #121212;
+  --muted: #707485;
+  --line: #c9c9c9;
+  --accent: #385a92;
+  --accent-ink: #ffffff;
+  --accent-soft: #e9f1f8;
+  --ok: #0ca581;
+  --ok-soft: #e1f5ef;
+  --warn-bg: #fdecee;
+  --warn-line: #f3b9c0;
+  --warn-ink: #b23a47;
+  --low: #da515e;
+  --track: #e8e8e8;
+  --c-pressure: #17c29a;
+  --c-flow: #0358cf;
+  --c-weight: #b98c63;
+  --c-weight-flow: #d8bda8;
+  --c-temp: #ff97a1;
+  --c-water: #1d7f86;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #101217;
+  --surface: #17191e;
+  --surface-2: #292c38;
+  --ink: #e8e8e8;
+  --muted: #959bb0;
+  --line: #3d4255;
+  --accent: #8aa6dc;
+  --accent-ink: #101217;
+  --accent-soft: #232a3d;
+  --ok: #3fd0a8;
+  --ok-soft: #14302a;
+  --warn-bg: #3a1d22;
+  --warn-line: #6b2f37;
+  --warn-ink: #ff9aa4;
+  --low: #ff8a94;
+  --track: #2a2d36;
+  --c-pressure: #17c29a;
+  --c-flow: #4e8cf0;
+  --c-weight: #d8bda8;
+  --c-weight-flow: #bfa58f;
+  --c-temp: #ff97a1;
+  --c-water: #5cc9cf;
+  color-scheme: dark;
+}
+
+/* Derived from the tokens above, never new hues: softer dividers, a field's baseline, a hover fill and the shadow
+   that only overlays get. The plain fallbacks serve a WebView without color-mix(). */
+:root {
+  --ui-divider: var(--line);
+  --ui-field-rule: var(--muted);
+  --ui-ok-ink: var(--ok);
+  --ui-hover: var(--accent-soft);
+  --ui-shadow: 0 0.6rem 2rem rgb(0 0 0 / 0.16);
+}
+@supports (color: color-mix(in srgb, black, white)) {
+  :root {
+    --ui-divider: color-mix(in srgb, var(--line) 55%, var(--bg));
+    --ui-field-rule: color-mix(in srgb, var(--muted) 80%, var(--ink));
+    --ui-ok-ink: color-mix(in srgb, var(--ok) 60%, var(--ink));
+    --ui-hover: color-mix(in srgb, var(--accent-soft) 70%, var(--surface));
+  }
+}
