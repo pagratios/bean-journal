@@ -1,0 +1,10 @@
+# The owner reviews and merges everything. GitHub only enforces code owners on a private repository with
+# GitHub Pro (or once it is public); until then this documents who decides.
+*                   @pagratios
+
+/.github/           @pagratios
+/.githooks/         @pagratios
+/AGENTS.md          @pagratios
+/CLAUDE.md          @pagratios
+/package.json       @pagratios
+/package-lock.json  @pagratios
