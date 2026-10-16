@@ -13,7 +13,7 @@ const texts = await build({
 const textContext = {};
 runInNewContext(texts.outputFiles[0].text, textContext);
 const copy = textContext.Texts.texts;
-const theme = await readFile(resolve("src", "theme.css"), "utf8");
+const theme = await readFile(resolve("src", "core", "theme.css"), "utf8");
 const compiled = await build({
   entryPoints: [resolve("src", "plugin.ts")],
   bundle: true, write: false, format: "iife", globalName: "BeanJournal", target: "es2020",

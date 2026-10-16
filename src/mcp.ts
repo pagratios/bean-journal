@@ -1,22 +1,18 @@
-// The plugin's MCP server: AI assistants (Claude, Copilot…) reach the tablet at
-// /api/v1/plugins/bean-journal.reaplugin/mcp with the token from the AI tab. Streamable HTTP without streams: each
-// POST is one JSON-RPC message, answered with JSON. Every tool is one of the page's own actions, so the rules stay one.
+// Bean Journal's MCP server: AI assistants (Claude, Copilot…) reach the tablet at
+// /api/v1/plugins/bean-journal.reaplugin/mcp with the token from the AI tab. The JSON-RPC server, access levels and
+// confirmations are the core's; these are Bean Journal's tools, each one or more of the page's own actions.
+import {
+  mcpMessage as coreMessage, mcpToolList as coreToolList, mcpTokenPattern,
+  type McpConfirm, type McpContext, type McpLevel, type McpSchema as Schema, type McpTool as Tool,
+} from "./core/mcp";
+import { BEVERAGES } from "./core/profiles";
+
+export {
+  MCP_BUDGET, MCP_CONFIRMS, MCP_LEVELS, MCP_PROTOCOLS, rateLimit, type McpConfirm, type McpContext, type McpLevel,
+} from "./core/mcp";
+export const MCP_TOKEN = mcpTokenPattern("bjm");
 
 type ObjectData = Record<string, unknown>;
-
-/** What the page's AI tab allows; each level includes the ones before it. */
-export const MCP_LEVELS = ["off", "read", "shots", "full"] as const;
-export type McpLevel = typeof MCP_LEVELS[number];
-/** When the assistant must ask the user first: never, before changes to the machine and profiles, before any change. */
-export const MCP_CONFIRMS = ["none", "changes", "all"] as const;
-export type McpConfirm = typeof MCP_CONFIRMS[number];
-export const MCP_TOKEN = /^bjm_[A-Za-z0-9_-]{32,128}$/;
-export const MCP_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-/** Clients cut a long tool list without a word (Decenza saw ChatGPT drop 10 of 97 tools): the tests keep these. */
-export const MCP_BUDGET = { tools: 40, description: 500, property: 120, bytes: 40000 };
-/** Decaid's beverage categories (a profile's beverage_type). */
-const BEVERAGES = ["espresso", "filter", "pourover", "tea", "tea_portafilter", "calibrate", "cleaning", "manual"] as const;
-
 const isObject = (value: unknown): value is ObjectData => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown) => typeof value === "string" ? value : "";
 /** {} for nothing; anything but an object is refused, as the page's own reader does. */
@@ -25,21 +21,6 @@ function optionalObject(value: unknown): ObjectData {
   if (!isObject(value)) throw new Error("invalidData");
   return value;
 }
-
-type Schema = ObjectData;
-/** One of the page's actions, with the page's argument names; a function body is built from the answers so far. */
-type Step = { action: string; body?: ObjectData | ((answer: ObjectData) => ObjectData) };
-type Tool = {
-  name: string; level: Exclude<McpLevel, "off">; title: string; description: string;
-  /** read: changes nothing the user would notice; edit: a shot, a coffee or the next shot's coffee and gear; machine: the machine or profiles. */
-  kind: "read" | "edit" | "machine";
-  alwaysConfirm?: boolean;
-  properties?: Record<string, Schema>; required?: string[];
-  /** The page action(s) it runs, in order; their answers are merged. Throws invalidArguments for a bad combination. */
-  call: (a: ObjectData) => Step | Step[];
-  /** What the assistant gets back, when it differs from the page's answer. */
-  shape?: (result: unknown, a: ObjectData) => unknown;
-};
 
 const id = (what: string): Schema => ({ type: "string", description: what });
 const num = (min: number, max: number, description?: string): Schema => ({ type: "number", minimum: min, maximum: max, ...(description ? { description } : {}) });
@@ -329,104 +310,12 @@ export const MCP_TOOLS: Tool[] = [
     call: (a) => ({ action: "load-shot", body: { shotId: a.shot_id, coffeeId: a.coffee_id } }) },
 ];
 
-const allows = (level: McpLevel, need: Tool["level"]) => MCP_LEVELS.indexOf(level) >= MCP_LEVELS.indexOf(need);
-const asks = (confirm: McpConfirm, tool: Tool) => tool.alwaysConfirm === true || (tool.kind !== "read" && (confirm === "all" || (confirm === "changes" && tool.kind === "machine")));
-const CONFIRMED: Schema = { type: "boolean", description: "true only after the user agreed to this call (it answered needs_confirmation)." };
-
 export function mcpToolList(level: McpLevel, confirm: McpConfirm = "changes") {
-  return MCP_TOOLS.filter((t) => allows(level, t.level)).map((t) => ({
-    name: t.name, title: t.title, description: t.description,
-    inputSchema: {
-      type: "object", properties: { ...t.properties, ...(asks(confirm, t) ? { confirmed: CONFIRMED } : {}) },
-      ...(t.required ? { required: t.required } : {}), additionalProperties: false,
-    },
-    annotations: { title: t.title, readOnlyHint: t.kind === "read", destructiveHint: t.kind === "machine" || t.alwaysConfirm === true, idempotentHint: t.kind === "read", openWorldHint: false },
-  }));
+  return coreToolList(MCP_TOOLS, level, confirm);
 }
 
-/** At most `max` calls in any `windowMs`; only calls that ran count. */
-export function rateLimit(max: number, windowMs: number, now: () => number = Date.now) {
-  let times: number[] = [];
-  return () => {
-    const t = now();
-    times = times.filter((x) => t - x < windowMs);
-    if (times.length >= max) return false;
-    times.push(t);
-    return true;
-  };
-}
-
-export type McpContext = {
-  level: McpLevel; confirm?: McpConfirm; version: string; instructions: string;
-  act: (action: string, body: ObjectData) => Promise<unknown>;
-  /** The page's own words for a failure. */
-  explain: (e: unknown) => string;
-  /** Counts a change; false when there were too many in the last minute. */
-  allowChange?: () => boolean;
-  says: { notAllowed: string; tooMany: string; confirm: string };
-};
-
-const rpcError = (rid: unknown, code: number, message: string) => ({ jsonrpc: "2.0", id: rid ?? null, error: { code, message } });
-const result = (rid: unknown, value: unknown) => ({ jsonrpc: "2.0", id: rid, result: value });
-const toolText = (value: unknown, isError = false) => ({
-  content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value ?? null) }],
-  ...(isObject(value) && !isError ? { structuredContent: value } : {}),
-  isError,
-});
-
+const SERVER = { name: "bean-journal", title: "Bean Journal on the Decent", tools: MCP_TOOLS };
 /** One JSON-RPC message in, its answer out (null for a notification, which gets none). */
-export async function mcpMessage(message: unknown, ctx: McpContext): Promise<ObjectData | null> {
-  // Batches were only ever in 2025-03-26 and are gone since; refused, not answered "method not found".
-  if (!isObject(message)) return rpcError(null, -32600, "Invalid Request");
-  const m = message;
-  const method = text(m.method);
-  if (m.jsonrpc !== "2.0") return rpcError(m.id, -32600, "Invalid Request");
-  // A client's answer or a notification (initialized, cancelled…): nothing to say back.
-  if (!("id" in m) || m.id === null || !method) return null;
-  // Params that aren't an object are the client's mistake, not the tablet's: say so instead of failing the request.
-  if (m.params != null && !isObject(m.params)) return rpcError(m.id, -32602, "Invalid params");
-  const params = optionalObject(m.params);
-  const confirm = ctx.confirm ?? "changes";
-  switch (method) {
-    case "initialize": {
-      const asked = text(params.protocolVersion);
-      return result(m.id, {
-        protocolVersion: MCP_PROTOCOLS.includes(asked) ? asked : MCP_PROTOCOLS[0],
-        capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "bean-journal", title: "Bean Journal on the Decent", version: ctx.version },
-        instructions: ctx.instructions,
-      });
-    }
-    case "ping": return result(m.id, {});
-    case "tools/list": return result(m.id, { tools: mcpToolList(ctx.level, confirm) });
-    case "tools/call": {
-      const name = text(params.name);
-      const tool = MCP_TOOLS.find((t) => t.name === name);
-      if (!tool) return rpcError(m.id, -32602, `Unknown tool: ${name}`);
-      if (!allows(ctx.level, tool.level)) return result(m.id, toolText(ctx.says.notAllowed, true));
-      if (params.arguments != null && !isObject(params.arguments)) return result(m.id, toolText("Arguments must be an object", true));
-      const { confirmed, ...args } = optionalObject(params.arguments);
-      const missing = (tool.required ?? []).filter((k) => !(k in args));
-      if (missing.length) return result(m.id, toolText(`Missing: ${missing.join(", ")}`, true));
-      const unknown = Object.keys(args).filter((k) => !(k in (tool.properties ?? {})));
-      if (unknown.length) return result(m.id, toolText(`Unknown arguments: ${unknown.join(", ")}`, true));
-      // Asked in the chat: the call is answered with what it would do, and runs when made again with confirmed.
-      if (asks(confirm, tool) && confirmed !== true) {
-        return result(m.id, toolText({ needs_confirmation: true, tool: tool.name, title: tool.title, arguments: args, says: ctx.says.confirm }));
-      }
-      if (tool.kind !== "read" && ctx.allowChange && !ctx.allowChange()) return result(m.id, toolText(ctx.says.tooMany, true));
-      try {
-        // Every step changes what it names on its own (and again the same way when retried), so they run in order.
-        let answer: unknown;
-        for (const { action, body } of [tool.call(args)].flat()) {
-          const one = await ctx.act(action, { ...(typeof body === "function" ? body(isObject(answer) ? answer : {}) : body), action });
-          answer = isObject(answer) && isObject(one) ? { ...answer, ...one } : one;
-        }
-        return result(m.id, toolText(tool.shape ? tool.shape(answer, args) : answer));
-      } catch (e) {
-        return result(m.id, toolText(ctx.explain(e), true));
-      }
-    }
-    default: return rpcError(m.id, -32601, `Method not found: ${method}`);
-  }
+export function mcpMessage(message: unknown, ctx: McpContext) {
+  return coreMessage(message, SERVER, ctx);
 }

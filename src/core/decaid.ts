@@ -1,5 +1,5 @@
-// Decaid's own REST API, as the plugin reaches it on the tablet.
-import { optionalObject, text } from "./protocol";
+// Decaid's own REST API, as a plugin reaches it on the tablet.
+import { optionalObject, text } from "./data";
 
 export const LOCAL = "http://localhost:8080/api/v1";
 export type DecaidError = Error & { status?: number; detail?: string };

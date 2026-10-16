@@ -16,3 +16,6 @@ First version: Beanbox's tablet features without an account or cloud, on stock S
 - MCP endpoint for AI assistants with three access levels and confirmations. `add_coffee` and `update_coffee` set
   every field Decaid has for a coffee and its bag (also species, decaf process, harvest, cupping score, price and buy
   date, which the page doesn't show) and its photo, as an https image address or a data URL.
+- For other plugins: `bean-journal/core` (`src/core/`), the product-neutral part of Bean Journal (Decaid data and
+  client, shot curves and steps, profiles, Streamline's surfaces with Keep ratio, the MCP server, the theme), as
+  TypeScript source to pin from GitHub and bundle.

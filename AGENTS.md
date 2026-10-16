@@ -7,12 +7,16 @@ its key-value store). Build, test, install and preview steps are in `README.md`;
 ## Layout
 
 - `src/plugin.ts`: the plugin core (`createPlugin`, events, `handle()` endpoints, the page's `control` actions).
-  `PLUGIN_ID` and `VERSION` live here.
-- `src/protocol.ts`, `src/coffees.ts`, `src/skin.ts`: pure helpers (shots, coffees from beans and batches, the
-  Streamline surfaces). Unit-test them.
-- `src/mcp.ts`: the MCP server; every tool runs one or more of the page's own `control` actions.
-- `src/ui.ts`: the whole page (one serialized client function, its CSS and markup); `src/theme.css`: Streamline's
-  tokens; `src/i18n.ts`: every user-facing string, in English (the only language).
+  `PLUGIN_ID` and `VERSION` live here (`package.json`'s `version` follows it).
+- `src/core/`: the shared core other plugins build on (`bean-journal/core`, see `README.md`): Decaid data and client,
+  shot curves and steps, profiles, Streamline surfaces, the MCP server, `theme.css` (Streamline's tokens). It names no
+  product and imports only itself (a test checks); a plugin passes its id, extras key, texts and tools.
+- `src/protocol.ts`, `src/coffees.ts`, `src/skin.ts`: Bean Journal's own pure helpers on top of the core (its
+  `extras.beanJournal`, notes block and shot summary; coffees from beans and batches; its Streamline button). Unit-test
+  them.
+- `src/mcp.ts`: Bean Journal's MCP tools; every tool runs one or more of the page's own `control` actions.
+- `src/ui.ts`: the whole page (one serialized client function, its CSS and markup); `src/i18n.ts`: every user-facing
+  string, in English (the only language).
 - `scripts/build.mjs`: the manifest (settings labels come from i18n `settings`) and the ZIP.
 - `src/*.test.ts`: vitest with a fake Decaid; one test runs the built bundle without a `URL` class, as Decaid does.
 - `tools/preview-server.mjs`: fake Decaid (8080) and a Streamline checkout (3000, `SKIN=<folder>`).
@@ -72,8 +76,11 @@ the two share most of their tablet code. **A change in one that isn't specific t
 - When a change is shared, make the matching change in the other repository too (its own branch and pull request),
   or, if that isn't possible now, say so in the pull request with what still has to be ported. Name the other
   repository's commit or pull request in each.
+- Shared code moves into `src/core/` here, so that Beanbox can depend on `bean-journal/core` instead of keeping a copy.
+  Put a shared change there when it fits (product-neutral: ids, extras keys, texts and tools are parameters). Code
+  Beanbox already takes from the core needs no port, only a bump of its pinned version.
 - Beanbox is private and a client of an unpublished service: never bring its cloud code, URLs, keys or branding
-  into this public repository.
+  into this public repository. The dependency runs one way: Beanbox imports Bean Journal, never the reverse.
 
 ## Decaid facts
 
