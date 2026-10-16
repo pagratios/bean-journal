@@ -7,7 +7,7 @@ import { texts } from "./i18n";
 import { page } from "./ui";
 
 const source = readFileSync(resolve("src", "ui.ts"), "utf8");
-const theme = readFileSync(resolve("src", "theme.css"), "utf8");
+const theme = readFileSync(resolve("src", "core", "theme.css"), "utf8");
 
 function render() {
   vi.stubGlobal("__DECAID_COPY__", texts);

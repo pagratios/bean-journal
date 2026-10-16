@@ -8,7 +8,7 @@ import {
   mergedExtras, oldBags, sameCoffee, today, type Coffee, type CoffeeInput, type RecentShot,
 } from "./coffees";
 import { round1, skinSurfaces, type Kept } from "./skin";
-import { decaid } from "./decaid";
+import { decaid } from "./core/decaid";
 import { copy, page } from "./ui";
 import { MCP_CONFIRMS, MCP_LEVELS, MCP_TOKEN, mcpMessage, rateLimit, type McpConfirm, type McpLevel } from "./mcp";
 

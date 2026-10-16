@@ -145,6 +145,30 @@ A fake Decaid on port 8080 runs the built plugin with sample coffees, grinders a
 button pulls a 32 s shot (stored as Decaid stores shots), Sleep shows the screensaver, and a fake DiFluid R2 measures.
 `R2=0` removes the R2, `SCALE=0` the scale. Restart it after a build.
 
+## Building another plugin on the core
+
+`src/core/` is the part of Bean Journal that any Decaid plugin for Streamline can share: Decaid's data read safely and
+its REST client, a shot's curves and profile steps, "Copy for AI" text, profiles (checked steps, edits, a brew
+temperature, AI designs), Streamline's plugin surfaces with Keep ratio, the MCP server (levels, confirmations, rate
+limit) and Streamline's theme tokens. It names no product: a plugin passes its own button, extras key, texts and MCP
+tools. A test keeps it that way, and keeps it importing only itself.
+
+Another plugin pins a version and bundles the core into its own `.reaplugin`:
+
+```sh
+npm install github:pagratios/bean-journal#<commit or tag>
+```
+
+```ts
+import { streamlineSurfaces, mcpMessage, shotCurves, tagIn } from "bean-journal/core";
+```
+
+and its build reads the theme with
+`readFile(fileURLToPath(import.meta.resolve("bean-journal/core/theme.css")), "utf8")`.
+
+The package is TypeScript source (no build step); a bundler such as esbuild and `"moduleResolution": "bundler"` read
+it as is. Only `src/core/` is in the package.
+
 ## Things learned about Decaid's plugin engine
 
 - There is no `URL` class in plugin code; parse addresses by hand. The page runs in the browser and may use it.

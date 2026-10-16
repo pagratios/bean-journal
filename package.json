@@ -1,9 +1,18 @@
 {
   "name": "bean-journal",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Bean Journal: a Decaid plugin for Streamline (bean-journal.reaplugin)",
   "license": "MIT",
+  "exports": {
+    "./core": "./src/core/index.ts",
+    "./core/theme.css": "./src/core/theme.css"
+  },
+  "files": [
+    "src/core",
+    "!src/core/*.test.ts"
+  ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "vitest run",

@@ -684,4 +684,9 @@ describe("Bean Journal plugin", () => {
     const skin = await plugin.__httpRequestHandler({ endpoint: "skin", method: "GET", body: null, headers: { origin: "http://localhost:3000" } });
     expect(JSON.parse(skin.body).surfaces[0]).toMatchObject({ label: "Kiambu" });
   });
+
+  // Other plugins pin a version of the core: the package says the plugin's.
+  it("keeps package.json's version with the plugin's", () => {
+    expect(JSON.parse(readFileSync(resolve("package.json"), "utf8")).version).toBe(VERSION);
+  });
 });
