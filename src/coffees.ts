@@ -8,11 +8,15 @@ export type Coffee = {
   roaster: string; name: string;
   country: string; region: string; producer: string; farm: string;
   varieties: string[]; altitude: number[]; process: string; decaf: boolean;
+  species: string; decafProcess: string;
   tastingNotes: string; link: string;
   /** The photo's ISO stamp (the page's cache key), or null when there is none. */
   photo: string | null;
   roastDate: string | null;
   roastLevel: string;
+  /** Decaid keeps it as text: a year, a season or a day. */
+  harvestDate: string; qualityScore: number | null;
+  price: number | null; currency: string; buyDate: string | null;
   weight: number | null; remaining: number | null;
   frozen: boolean; freezeDate: string | null; thawDate: string | null;
   openDate: string | null; bestBefore: string | null;
@@ -22,8 +26,10 @@ export type Coffee = {
 };
 
 export const BEAN_PREFIX = "bean:";
-export const BEAN_FIELDS = ["roaster", "name", "country", "region", "producer", "farm", "varieties", "altitude", "process", "decaf", "tastingNotes", "link"] as const;
-export const BAG_FIELDS = ["roastDate", "roastLevel", "weight", "remaining", "frozen", "freezeDate", "thawDate", "openDate", "bestBefore", "bagNotes", "finished"] as const;
+export const BEAN_FIELDS = ["roaster", "name", "country", "region", "producer", "farm", "varieties", "altitude", "process", "decaf",
+  "species", "decafProcess", "tastingNotes", "link"] as const;
+export const BAG_FIELDS = ["roastDate", "roastLevel", "harvestDate", "qualityScore", "price", "currency", "buyDate", "weight", "remaining",
+  "frozen", "freezeDate", "thawDate", "openDate", "bestBefore", "bagNotes", "finished"] as const;
 type BeanField = typeof BEAN_FIELDS[number];
 type BagField = typeof BAG_FIELDS[number];
 /** What the add/edit form or an assistant sends: absent = unchanged, null = cleared. */
@@ -68,9 +74,12 @@ export function coffeeOf(bean: ObjectData, batch: ObjectData | null): Coffee {
     varieties: strings(bean.variety),
     altitude: Array.isArray(bean.altitude) ? bean.altitude.filter((a): a is number => number(a) !== undefined) : [],
     process: text(bean.processing), decaf: bean.decaf === true,
+    species: text(bean.species), decafProcess: text(bean.decafProcess),
     tastingNotes: text(bean.notes), link: httpsUrl(own.link) ?? "",
     photo: text(own.photo) || null,
     roastDate: day(batch?.roastDate), roastLevel: text(batch?.roastLevel),
+    harvestDate: text(batch?.harvestDate), qualityScore: number(batch?.qualityScore) ?? null,
+    price: number(batch?.price) ?? null, currency: text(batch?.currency), buyDate: day(batch?.buyDate),
     weight: number(batch?.weight) ?? null, remaining: number(batch?.weightRemaining) ?? null,
     frozen: batch?.frozen === true, freezeDate: day(batch?.freezeDate), thawDate: day(batch?.unfreezeDate),
     openDate: day(batch?.openDate), bestBefore: day(batch?.bestBeforeDate),
@@ -145,15 +154,18 @@ export function coffeeInput(value: unknown): CoffeeInput {
       return v === true;
     };
     const date = () => v === null || v === "" ? null : day(decaidDay(v));
-    const grams = (min: number) => {
+    const amount = (min: number, max: number, round: number) => {
       if (v === null) return null;
       const n = number(v);
-      if (n === undefined || n < min || n > 100000) throw new Error("invalidArguments");
-      return Math.round(n * 10) / 10;
+      if (n === undefined || n < min || n > max) throw new Error("invalidArguments");
+      return Math.round(n * round) / round;
     };
     switch (k) {
       case "roaster": case "name": out[k] = line(120); break;
-      case "country": case "region": case "producer": case "farm": case "process": case "roastLevel": out[k] = line(80); break;
+      case "country": case "region": case "producer": case "farm": case "process": case "roastLevel": case "species": case "decafProcess":
+        out[k] = line(80); break;
+      case "harvestDate": out[k] = line(40); break;
+      case "currency": out[k] = line(10); break;
       case "tastingNotes": case "bagNotes": out[k] = long(2000); break;
       case "decaf": case "frozen": case "finished": out[k] = flag(); break;
       case "varieties": {
@@ -172,9 +184,11 @@ export function coffeeInput(value: unknown): CoffeeInput {
         out[k] = link;
         break;
       }
-      case "roastDate": case "freezeDate": case "thawDate": case "openDate": case "bestBefore": out[k] = date(); break;
-      case "weight": out[k] = grams(0.1); break;
-      case "remaining": out[k] = grams(0); break;
+      case "roastDate": case "freezeDate": case "thawDate": case "openDate": case "bestBefore": case "buyDate": out[k] = date(); break;
+      case "weight": out[k] = amount(0.1, 100000, 10); break;
+      case "remaining": out[k] = amount(0, 100000, 10); break;
+      case "qualityScore": out[k] = amount(0, 100, 100); break;
+      case "price": out[k] = amount(0, 1000000, 100); break;
       default: throw new Error("invalidArguments");
     }
   }
@@ -208,7 +222,7 @@ export function beanBody(input: CoffeeInput, existing: ObjectData | null): Objec
     }
   }
   for (const [from, to] of [["country", "country"], ["region", "region"], ["producer", "producer"], ["process", "processing"],
-    ["tastingNotes", "notes"], ["varieties", "variety"], ["altitude", "altitude"]] as const) {
+    ["species", "species"], ["decafProcess", "decafProcess"], ["tastingNotes", "notes"], ["varieties", "variety"], ["altitude", "altitude"]] as const) {
     if (from in input) body[to] = input[from] ?? null;
   }
   if ("decaf" in input) body.decaf = input.decaf === true;
@@ -227,10 +241,10 @@ export function batchBody(input: CoffeeInput, existing: ObjectData | null, now: 
   const body: ObjectData = {}, after: ObjectData = {};
   const at = (v: unknown) => v == null ? null : decaidDay(v);
   for (const [from, to] of [["roastDate", "roastDate"], ["freezeDate", "freezeDate"], ["thawDate", "unfreezeDate"],
-    ["openDate", "openDate"], ["bestBefore", "bestBeforeDate"]] as const) {
+    ["openDate", "openDate"], ["bestBefore", "bestBeforeDate"], ["buyDate", "buyDate"]] as const) {
     if (from in input) body[to] = at(input[from]);
   }
-  if ("roastLevel" in input) body.roastLevel = input.roastLevel ?? null;
+  for (const k of ["roastLevel", "harvestDate", "qualityScore", "price", "currency"] as const) if (k in input) body[k] = input[k] ?? null;
   if ("bagNotes" in input) body.notes = input.bagNotes ?? null;
   if ("weight" in input) body.weight = input.weight ?? null;
   if ("frozen" in input) {

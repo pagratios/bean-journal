@@ -12,4 +12,6 @@ First version: Beanbox's tablet features without an account or cloud, on stock S
 - Streamline's surfaces: header button, screensaver button, Grind / Dose / Drink pills and lines, Keep ratio, the
   ratio's numpad, the live shot strip, "Rate and edit" in the shot history.
 - Optional Bean Journal block in shot notes for Visualizer.
-- MCP endpoint for AI assistants with three access levels and confirmations.
+- MCP endpoint for AI assistants with three access levels and confirmations. `add_coffee` and `update_coffee` set
+  every field Decaid has for a coffee and its bag (also species, decaf process, harvest, cupping score, price and buy
+  date, which the page doesn't show) and its photo, as an https image address or a data URL.

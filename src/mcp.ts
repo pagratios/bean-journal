@@ -108,9 +108,16 @@ const coffeeFields: Record<string, Schema> = {
   varieties: { type: "array", maxItems: 10, items: { type: "string", maxLength: 60 }, description: "e.g. [\"SL28\", \"SL34\"]." },
   altitude: { type: "array", maxItems: 2, items: { type: "integer", minimum: 0, maximum: 6000 }, description: "Metres: [1900], or a range [1700, 2100]." },
   process: { type: "string", maxLength: 80, description: "e.g. Washed, Natural, Honey." }, decaf: { type: "boolean" },
+  species: { type: "string", maxLength: 80, description: "e.g. Arabica, Robusta." },
+  decaf_process: { type: "string", maxLength: 80, description: "e.g. Sugarcane EA, Swiss Water." },
   tasting_notes: { type: "string", maxLength: 1000, description: "The roaster's tasting notes." },
   link: { type: "string", maxLength: 500, description: "The roaster's page for it (https)." },
+  photo: { type: "string", maxLength: 600000, description: "An https image URL, shown from the web (e.g. the roaster's product photo), or a data:image/…;base64 URL." },
   roast_date: day, roast_level: { type: "string", maxLength: 40, description: "e.g. Light, Medium." },
+  harvest_date: { type: "string", maxLength: 40, description: "As the roaster gives it, e.g. 2025 or Nov 2025 - Jan 2026." },
+  quality_score: num(0, 100, "The cupping (SCA) score."),
+  price: num(0, 1000000, "What the bag cost, in currency."), currency: { type: "string", maxLength: 10, description: "e.g. EUR." },
+  buy_date: day,
   weight: num(0, 20000, "Grams in the bag as bought."),
   remaining: num(0, 20000, "Grams left; a new bag with weight and no remaining starts full."),
   frozen: { type: "boolean", description: "In the freezer; changing it dates the freezing or thawing today." },
@@ -119,10 +126,13 @@ const coffeeFields: Record<string, Schema> = {
 };
 const coffeeNames = {
   roaster: "roaster", name: "name", country: "country", region: "region", producer: "producer", farm: "farm", varieties: "varieties",
-  altitude: "altitude", process: "process", decaf: "decaf", tasting_notes: "tastingNotes", link: "link", roast_date: "roastDate",
-  roast_level: "roastLevel", weight: "weight", remaining: "remaining", frozen: "frozen", open_date: "openDate", best_before: "bestBefore",
+  altitude: "altitude", process: "process", decaf: "decaf", species: "species", decaf_process: "decafProcess", tasting_notes: "tastingNotes",
+  link: "link", roast_date: "roastDate", roast_level: "roastLevel", harvest_date: "harvestDate", quality_score: "qualityScore", price: "price",
+  currency: "currency", buy_date: "buyDate", weight: "weight", remaining: "remaining", frozen: "frozen", open_date: "openDate", best_before: "bestBefore",
   bag_notes: "bagNotes", finished: "finished", freeze_date: "freezeDate", thaw_date: "thawDate",
 };
+/** The photo goes beside the fields: the page sets it apart, an assistant with the rest. */
+const withPhoto = (a: ObjectData) => "photo" in a ? { photo: a.photo } : {};
 /** Decaid refuses null for these: they can change but not be cleared. */
 const notNullable = ["roaster", "name", "decaf", "frozen", "finished"];
 const coffeeEdits: Record<string, Schema> = Object.fromEntries(Object.entries({
@@ -142,7 +152,7 @@ export const MCP_TOOLS: Tool[] = [
     properties: { coffee_id: { ...coffeeId, description: "Another coffee than the one chosen for the next shot." } },
     call: (a) => ({ action: "dial-in", body: { coffeeId: a.coffee_id } }) },
   { name: "list_coffees", level: "read", kind: "read", title: "Coffees",
-    description: "The user's coffees on the tablet, one per bag: roaster, name, origin, process, varieties, tasting notes, roast date and level, grams left, frozen, opened. Coffees with no bag yet have ids starting with \"bean:\".",
+    description: "The user's coffees on the tablet, one per bag: roaster, name, origin, process, varieties, species, tasting notes, roast and harvest dates, roast level, score, price, grams left, frozen, opened; photo: when one was set. Coffees with no bag yet have ids starting with \"bean:\".",
     properties: { include_finished: { type: "boolean", description: "Also the finished bags." } },
     call: (a) => ({ action: "coffees", body: { includeFinished: a.include_finished === true } }) },
   { name: "get_shot", level: "read", kind: "read", title: "One shot",
@@ -243,19 +253,19 @@ export const MCP_TOOLS: Tool[] = [
     call: (a) => {
       const fields = pick(a, coffeeNames);
       if (a.add_to_coffee_id != null && a.save_new === true) invalid();
-      if (a.add_to_coffee_id == null) return { action: "save-coffee", body: { fields, ...(a.save_new === true ? { saveNew: true } : {}) } };
+      if (a.add_to_coffee_id == null) return { action: "save-coffee", body: { fields, ...withPhoto(a), ...(a.save_new === true ? { saveNew: true } : {}) } };
       // The page adds to a bean (all of a coffee's bags share one); the assistant knows the bag it was shown.
       return [{ action: "coffee", body: { id: a.add_to_coffee_id } }, { action: "save-coffee", body: (found) => {
         const beanId = text(optionalObject(found.coffee).beanId);
-        return beanId ? { fields, addToBeanId: beanId } : invalid();
+        return beanId ? { fields, ...withPhoto(a), addToBeanId: beanId } : invalid();
       } }];
     },
     shape: coffeeOnly },
   { name: "update_coffee", level: "shots", kind: "edit", title: "Edit a coffee or its bag",
-    description: "Edits a coffee (coffee_id from list_coffees). Coffee fields (roaster to link) change it for all its bags; bag fields (roast_date on) change this bag. Only the fields given change; null clears one. finished: the bag is used up.",
+    description: "Edits a coffee (coffee_id from list_coffees). Coffee fields (roaster to photo) change it for all its bags; bag fields (roast_date on) change this bag. Only the fields given change; null clears one. finished: the bag is used up.",
     properties: { coffee_id: coffeeId, ...coffeeEdits },
     required: ["coffee_id"],
-    call: (a) => ({ action: "save-coffee", body: { id: a.coffee_id, fields: pick(a, coffeeNames) } }),
+    call: (a) => ({ action: "save-coffee", body: { id: a.coffee_id, fields: pick(a, coffeeNames), ...withPhoto(a) } }),
     shape: coffeeOnly },
   // ── Everything: profiles and the machine ──
   { name: "create_profile", level: "full", kind: "machine", title: "Design a profile",

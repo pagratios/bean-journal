@@ -1,5 +1,5 @@
 import {
-  BALANCES, BODIES, editedProfile, designedProfile, isBrew, items, localId, normTitle, notesBlockPatch, notesWithBlock, number, object,
+  BALANCES, BODIES, editedProfile, designedProfile, httpsUrl, isBrew, items, localId, normTitle, notesBlockPatch, notesWithBlock, number, object,
   optionalObject, originHost, profileAt, profileExecution, profileId as profileIdOf, shotKind, shotLine, shotRpm, shotSummary, shotText,
   shotWater, tagOf, text, unaccented, waterName, type ObjectData, type ShotLine,
 } from "./protocol";
@@ -203,9 +203,18 @@ export function createPlugin(host: Host) {
   const bagOnly = (input: CoffeeInput): CoffeeInput => Object.fromEntries(Object.entries(input).filter(([k]) => (BAG_FIELDS as readonly string[]).includes(k)));
   /**
    * The add/edit form. A new coffee whose roaster and name are a bean's already is answered as `duplicates` (the page
-   * asks: a bag of that one, or a new coffee anyway), and nothing is written.
+   * asks: a bag of that one, or a new coffee anyway), and nothing is written. `photo` (an assistant's; the page sets it
+   * apart) is checked before anything is written and set on the saved coffee.
    */
   async function saveCoffee(b: ObjectData) {
+    const withPhoto = b.photo !== undefined;
+    if (withPhoto) photoValue(b.photo);
+    const saved = await saveCoffeeFields(b);
+    if (!withPhoto || !("coffee" in saved)) return saved;
+    await setPhoto(saved.coffee.beanId, b.photo);
+    return { coffee: await coffeeById(saved.coffee.id) };
+  }
+  async function saveCoffeeFields(b: ObjectData): Promise<{ coffee: Coffee } | { duplicates: Coffee[] }> {
     const input = coffeeInput(b.fields);
     if (b.id == null) {
       if (b.addToBeanId != null) return { coffee: await newBag(localId(b.addToBeanId), bagOnly(input)) };
@@ -238,16 +247,31 @@ export function createPlugin(host: Host) {
     if (Object.keys(beanPatch).length) await local(`/beans/${enc(card.beanId)}`, "PUT", beanPatch);
     return { coffee: await coffeeById(result.id) };
   }
+  /**
+   * What goes in the photo's store slot: a data URL as the page makes it, or an https address kept as it is and shown
+   * from the web (Decaid's engine can't download an image to keep). Null: no photo.
+   */
+  function photoValue(photo: unknown): string | null {
+    if (photo === null) return null;
+    if (typeof photo !== "string") throw new Error("invalidArguments");
+    if (photo.startsWith("https://")) {
+      const url = httpsUrl(photo);
+      if (!url) throw new Error("invalidArguments");
+      return url;
+    }
+    if (!/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(photo)) throw new Error("invalidArguments");
+    if (photo.length > PHOTO_MAX) throw new Error("photoTooLarge");
+    return photo;
+  }
   async function setPhoto(beanId: unknown, photo: unknown) {
     const id = localId(beanId);
+    const value = photoValue(photo);
     const bean = object(await local(`/beans/${enc(id)}`));
     let stamp: string | null = null;
-    if (photo === null) {
+    if (value === null) {
       try { await local(`${PHOTOS}/${enc(id)}`, "DELETE"); } catch (e) { if (!(e instanceof Error) || e.message !== "notFound") throw e; }
     } else {
-      if (typeof photo !== "string" || !/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(photo)) throw new Error("invalidArguments");
-      if (photo.length > PHOTO_MAX) throw new Error("photoTooLarge");
-      await local(`${PHOTOS}/${enc(id)}`, "POST", photo);
+      await local(`${PHOTOS}/${enc(id)}`, "POST", value);
       stamp = new Date().toISOString();
     }
     await local(`/beans/${enc(id)}`, "PUT", { extras: mergedExtras(bean, { photo: stamp }) });

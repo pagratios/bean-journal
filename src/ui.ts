@@ -257,7 +257,8 @@ function client(t: Copy) {
   }
   const list = (v: unknown) => Array.isArray(v) ? v.filter((x): x is Data => typeof x === "object" && x !== null) : [];
 
-  // ── Photos: Decaid's store keeps each coffee's photo (a JPEG data URL); read lazily, kept by the coffee's stamp. ──
+  // ── Photos: Decaid's store keeps each coffee's photo (a JPEG data URL, or an https address an assistant gave); read
+  // lazily, kept by the coffee's stamp. ──
   const photoCache = new Map<string, Promise<string | null>>();
   function photoOf(beanId: string, stamp: string | null | undefined): Promise<string | null> {
     if (!beanId || stamp === null) return Promise.resolve(null);
@@ -267,7 +268,7 @@ function client(t: Copy) {
     if (!value) {
       value = fetch(`/api/v1/store/beanJournal-photos/${encodeURIComponent(beanId)}`)
         .then((r) => r.ok ? r.json() : null)
-        .then((v) => typeof v === "string" && v.startsWith("data:image/") ? v : null)
+        .then((v) => typeof v === "string" && (v.startsWith("data:image/") || v.startsWith("https://")) ? v : null)
         .catch(() => { photoCache.delete(key); return null; });
       photoCache.set(key, value);
     }

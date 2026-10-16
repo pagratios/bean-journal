@@ -240,10 +240,12 @@ describe("MCP messages", () => {
       : body.addToBeanId || body.saveNew || body.id ? { coffee: { id: "batch-9", beanId: "bean-1" } } : { duplicates });
     const ctx = context({ level: "shots", act });
     const add = { roaster: "Taf Coffee", name: "Kiambu AA", country: "Kenya", varieties: ["SL28", "SL34"], altitude: [1700, 1900], process: "Washed",
-      decaf: false, tasting_notes: "Blackcurrant", link: "https://example.com/kiambu", roast_date: "2026-10-01", roast_level: "Light", weight: 250,
+      decaf: false, species: "Arabica", tasting_notes: "Blackcurrant", link: "https://example.com/kiambu", roast_date: "2026-10-01", roast_level: "Light",
+      harvest_date: "2025", quality_score: 87, price: 18.5, currency: "EUR", buy_date: "2026-10-02", weight: 250,
       frozen: false, open_date: "2026-10-05", best_before: "2027-04-01", bag_notes: "Gift" };
     const fields = { roaster: "Taf Coffee", name: "Kiambu AA", country: "Kenya", varieties: ["SL28", "SL34"], altitude: [1700, 1900], process: "Washed",
-      decaf: false, tastingNotes: "Blackcurrant", link: "https://example.com/kiambu", roastDate: "2026-10-01", roastLevel: "Light", weight: 250,
+      decaf: false, species: "Arabica", tastingNotes: "Blackcurrant", link: "https://example.com/kiambu", roastDate: "2026-10-01", roastLevel: "Light",
+      harvestDate: "2025", qualityScore: 87, price: 18.5, currency: "EUR", buyDate: "2026-10-02", weight: 250,
       frozen: false, openDate: "2026-10-05", bestBefore: "2027-04-01", bagNotes: "Gift" };
     // A coffee already there: nothing saved, the duplicates passed back as they are.
     expect(await mcpMessage(call("add_coffee", add), ctx)).toMatchObject({ result: { isError: false, structuredContent: { duplicates } } });
@@ -264,6 +266,15 @@ describe("MCP messages", () => {
     // The edit: only the fields given; null clears, finished and the freezer dates only here.
     await mcpMessage(call("update_coffee", { coffee_id: "batch-1", remaining: 120, region: null, finished: true, freeze_date: "2026-10-10", thaw_date: null }), ctx);
     expect(act).toHaveBeenLastCalledWith("save-coffee", { action: "save-coffee", id: "batch-1", fields: { remaining: 120, region: null, finished: true, freezeDate: "2026-10-10", thawDate: null } });
+    // The photo goes beside the fields, on a new coffee, a new bag or an edit; null removes it.
+    const photo = "https://example.com/kiambu.jpg";
+    await mcpMessage(call("add_coffee", { ...add, photo }), ctx);
+    expect(act).toHaveBeenLastCalledWith("save-coffee", { action: "save-coffee", fields, photo });
+    await mcpMessage(call("add_coffee", { ...add, add_to_coffee_id: "batch-1", photo }), ctx);
+    expect(act).toHaveBeenLastCalledWith("save-coffee", { action: "save-coffee", fields, photo, addToBeanId: "bean-1" });
+    await mcpMessage(call("update_coffee", { coffee_id: "batch-1", photo: null, decaf_process: "Swiss Water" }), ctx);
+    expect(act).toHaveBeenLastCalledWith("save-coffee", { action: "save-coffee", id: "batch-1", fields: { decafProcess: "Swiss Water" }, photo: null });
+    expect(props("update_coffee").photo).toMatchObject({ type: ["string", "null"] });
     expect(props("add_coffee")).not.toHaveProperty("finished");
     expect(props("update_coffee").region).toMatchObject({ type: ["string", "null"] });
     // What Decaid can't clear stays non-null.

@@ -49,9 +49,9 @@ Streamline with DYE2 on clears the coffee, grinder and RPM after each shot; Bean
 
 | What | In Decaid |
 | --- | --- |
-| A coffee | A bean: roaster, name, country, region, producer, varieties, altitude, process, decaf, notes (the tasting notes). The farm and roaster's page go in its `extras.beanJournal`. |
-| A bag | A bean batch: roast date and level, weight, grams left (Decaid takes each shot's dose off), frozen and its dates, opened, best before, notes. Finished = archived. |
-| A photo | The key-value store, `beanJournal-photos/<bean id>` (a resized JPEG). |
+| A coffee | A bean: roaster, name, country, region, producer, varieties, altitude, process, decaf, notes (the tasting notes); species and decaf process (set by assistants). The farm and roaster's page go in its `extras.beanJournal`. |
+| A bag | A bean batch: roast date and level, weight, grams left (Decaid takes each shot's dose off), frozen and its dates, opened, best before, notes; harvest, cupping score, price and currency, buy date (set by assistants). Finished = archived. |
+| A photo | The key-value store, `beanJournal-photos/<bean id>`: a resized JPEG, or an https image address an assistant gave (the page shows it from the web). |
 | Waters | The next shot's in the workflow (`context.extras.beanJournal.water`), each shot's in its annotations; the recent ones in `beanJournal/waters`. |
 | A shot's rating | Decaid's own fields: `enjoyment` (score ÷ 10), `espressoNotes`, `drinkTds`, `drinkEy`, actual dose and yield; taste and body in `annotations.extras.beanJournal`. Grinder, grind and RPM (`extras.rpm`) on the shot's workflow context. |
 
@@ -94,6 +94,10 @@ the same checks apply.
 | Read only | `get_status`, `get_dial_in_context`, `list_coffees`, `get_shot`, `list_shots`, `list_profiles`, `list_equipment`, `get_preferences`, `get_refractometer` |
 | Shots and coffee | `rate_shot`, `delete_shot`, `measure_tds`, `set_next_shot`, `add_coffee`, `update_coffee` |
 | Everything | `create_profile`, `update_profile`, `update_preferences`, `search_refractometer`, `choose_coffee`, `load_profile`, `load_shot_settings` |
+
+`add_coffee` and `update_coffee` take every field Decaid has for a coffee and its bag, and `photo`: an https image
+address (kept as it is and shown from the web; Decaid's plugins can't download an image) or a
+`data:image/jpeg|png|webp;base64,…` URL up to 600 000 characters.
 
 - **At home:** Claude Desktop through `mcp-remote`, VS Code or Copilot CLI, with the address and the token.
 - **Away, on your own devices (Tailscale serve):** on an always-on computer at home with Tailscale, forward only this

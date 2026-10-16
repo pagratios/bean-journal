@@ -239,9 +239,43 @@ describe("Bean Journal plugin", () => {
     expect(t.beans[0].extras).toMatchObject({ other: 1, beanJournal: { photo: set.photo } });
     expect((await t.control({ action: "set-photo", beanId: "b1", photo: `data:image/jpeg;base64,${"A".repeat(600001)}` })).data.code).toBe("photoTooLarge");
     expect((await t.control({ action: "set-photo", beanId: "b1", photo: "javascript:alert(1)" })).data.code).toBe("invalidArguments");
+    expect((await t.control({ action: "set-photo", beanId: "b1", photo: "https://bad host/x.jpg" })).data.code).toBe("invalidArguments");
+    // An assistant's https address is kept as it is: the page shows it from the web.
+    const url = "https://shop.example/img/kiambu.jpg?w=800";
+    const linked = (await t.ok({ action: "set-photo", beanId: "b1", photo: url })).coffee;
+    expect(t.store.get("beanJournal-photos/b1")).toBe(url);
+    expect(linked.photo).toMatch(/^\d{4}-/);
     expect((await t.ok({ action: "set-photo", beanId: "b1", photo: null })).coffee.photo).toBeNull();
     expect(t.store.has("beanJournal-photos/b1")).toBe(false);
     expect(t.beans[0].extras).toEqual({ other: 1 });
+  });
+
+  it("saves Decaid's other coffee fields and an assistant's photo with the coffee, checking the photo before writing", async () => {
+    const t = setup({}, {
+      beans: [{ id: "b1", roaster: "R", name: "N", decaf: false, archived: false, createdAt: "2026-01-01T00:00:00", extras: { other: 1 } }],
+      batches: [{ id: "t1", beanId: "b1", frozen: false, archived: false, createdAt: "2026-10-02T00:00:00" }],
+    });
+    const before = t.calls.length;
+    expect((await t.control({ action: "save-coffee", id: "t1", fields: { species: "Arabica" }, photo: "ftp://x" })).data.code).toBe("invalidArguments");
+    expect(t.calls.slice(before).some((c) => c.method !== "GET")).toBe(false);
+
+    const url = "https://shop.example/n.png";
+    const edited = (await t.ok({ action: "save-coffee", id: "t1", photo: url, fields: { species: "Arabica", decafProcess: "Sugarcane EA",
+      harvestDate: "2025/26", qualityScore: 87.25, price: 18.5, currency: "EUR", buyDate: "2026-10-03" } })).coffee;
+    expect(edited).toMatchObject({ id: "t1", species: "Arabica", decafProcess: "Sugarcane EA", harvestDate: "2025/26", qualityScore: 87.25,
+      price: 18.5, currency: "EUR", buyDate: "2026-10-03" });
+    expect(edited.photo).toMatch(/^\d{4}-/);
+    expect(t.store.get("beanJournal-photos/b1")).toBe(url);
+    expect(t.beans[0]).toMatchObject({ species: "Arabica", decafProcess: "Sugarcane EA", extras: { other: 1, beanJournal: { photo: edited.photo } } });
+    expect(t.batches[0]).toMatchObject({ harvestDate: "2025/26", qualityScore: 87.25, price: 18.5, currency: "EUR", buyDate: "2026-10-03T00:00:00" });
+
+    // A duplicate saves nothing, the photo neither.
+    const dup = await t.ok({ action: "save-coffee", fields: { roaster: "R", name: "N" }, photo: url });
+    expect(dup.duplicates).toHaveLength(1);
+    const made = (await t.ok({ action: "save-coffee", saveNew: true, fields: { roaster: "R", name: "N", price: 12 }, photo: `data:image/png;base64,${"A".repeat(40)}` })).coffee;
+    expect(made).toMatchObject({ price: 12 });
+    expect(t.store.get(`beanJournal-photos/${made.beanId}`)).toMatch(/^data:image\/png;base64,/);
+    expect((await t.ok({ action: "save-coffee", id: made.id, fields: {}, photo: null })).coffee.photo).toBeNull();
   });
 
   it("chooses a coffee for the next shot, making a bag for a bean without one, and keeps or loads its last or best shot", async () => {
