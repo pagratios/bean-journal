@@ -1,0 +1,20 @@
+{
+  "name": "bean-journal",
+  "private": true,
+  "type": "module",
+  "description": "Bean Journal: a Decaid plugin for Streamline (bean-journal.reaplugin)",
+  "license": "MIT",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "preview": "node tools/preview-server.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "esbuild": "0.28.2",
+    "fflate": "0.8.3",
+    "typescript": "^5",
+    "vitest": "^4.1.11"
+  }
+}
