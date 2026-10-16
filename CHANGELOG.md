@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Open the header, screensaver and shot-history pages full screen on Streamline 0.2.14 too, using page navigation
+  instead of an overlay size that release ignores. Done or × returns to Streamline; the small gear overlay is unchanged.
+
 ## 0.1.0
 
 First version: Beanbox's tablet features without an account or cloud, on stock Streamline.
