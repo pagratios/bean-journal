@@ -116,9 +116,12 @@ address (kept as it is and shown from the web; Decaid's plugins can't download a
 
 ## Install
 
-1. Download `bean-journal.reaplugin-<version>.zip` (a release, or build it below).
-2. Decaid → Plugins → `+` → ZIP file, and turn it on.
-3. Streamline (after 0.2.14, with plugin surfaces) shows it at its next read of the plugins.
+- Kept up to date by Decaid: Plugins → `+` → GitHub Release, repository `pagratios/bean-journal`, asset
+  `bean-journal.reaplugin.zip`.
+- Or download `bean-journal.reaplugin.zip` from the [releases](https://github.com/pagratios/bean-journal/releases)
+  (or build it below): Decaid → Plugins → `+` → ZIP file.
+
+Turn it on; Streamline (after 0.2.14, with plugin surfaces) shows it at its next read of the plugins.
 
 Bean Journal can be installed beside other plugins. If another plugin also asks for the header button, the first one
 in Decaid's plugin list wins.
@@ -144,6 +147,24 @@ http://localhost:8080/api/v1/plugins/bean-journal.reaplugin/ui (the page alone; 
 A fake Decaid on port 8080 runs the built plugin with sample coffees, grinders and shots. The **☕ Simulate coffee**
 button pulls a 32 s shot (stored as Decaid stores shots), Sleep shows the screensaver, and a fake DiFluid R2 measures.
 `R2=0` removes the R2, `SCALE=0` the scale. Restart it after a build.
+
+## CI and releases
+
+- **CI** (`.github/workflows/ci.yml`, every pull request and push to `main`): typecheck, tests (the release scripts'
+  too), build; the ZIP is kept as a workflow artifact (never a release).
+- **The version changes only in releases.** CI refuses a pull request that changes `VERSION` (`src/plugin.ts`),
+  except the `release/X.Y.Z` pull request made by `scripts/release.mjs`. Features add their notes to the coming
+  `## X.Y.Z` section of `CHANGELOG.md`.
+- **A release**, from a checkout whose HEAD equals `origin/main`:
+  1. `CHANGELOG.md` has a `## X.Y.Z` section for the new version (on `main`, or written now and left uncommitted).
+  2. `node scripts/release.mjs <patch|minor|major|X.Y.Z>`: creates `release/X.Y.Z`, sets `VERSION` and npm's
+     `version` to `X.Y.Z`, commits `Release X.Y.Z`, pushes the branch and opens its pull request.
+  3. Merge it, then `node scripts/release.mjs tag`: tags the commit on `origin/main` that set the version as
+     `vX.Y.Z` and pushes only the tag. (The first release, `0.1.0`, has no release pull request: it tags `main`.)
+  4. `.github/workflows/release.yml` tests and builds the tag and creates the GitHub release with
+     `bean-journal.reaplugin.zip`: **What's new** from `CHANGELOG.md`, the install steps, then the commits since the
+     previous tag. Decaid's "GitHub Release" install finds the file by that exact name at every update. Run by hand
+     on a branch, the workflow only leaves a labelled artifact.
 
 ## Building another plugin on the core
 

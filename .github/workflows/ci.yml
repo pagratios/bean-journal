@@ -14,6 +14,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # Only release/X.Y.Z pull requests from scripts/release.mjs may change the version, so parallel branches never
+      # collide on the same one.
+      - name: Version changes only in release pull requests
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          git fetch --quiet --depth=1 origin "$BASE_REF"
+          node scripts/check-version.mjs FETCH_HEAD "$HEAD_REF"
       - run: npm ci
       - run: npm run typecheck
       - run: npm test

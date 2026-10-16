@@ -23,3 +23,5 @@ First version: Beanbox's tablet features without an account or cloud, on stock S
 - For other plugins: `bean-journal/core` (`src/core/`), the product-neutral part of Bean Journal (Decaid data and
   client, shot curves and steps, profiles, Streamline's surfaces with Keep ratio, the MCP server, the theme), as
   TypeScript source to pin from GitHub and bundle.
+- Released on GitHub: Decaid installs Bean Journal and keeps it up to date from its releases (Plugins → `+` → GitHub
+  Release, repository `pagratios/bean-journal`, asset `bean-journal.reaplugin.zip`).
