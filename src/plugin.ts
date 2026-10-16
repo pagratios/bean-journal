@@ -1,11 +1,11 @@
 import {
-  BALANCES, BODIES, editedProfile, designedProfile, isBrew, items, localId, normTitle, notesBlockPatch, notesWithBlock, number, object,
+  BALANCES, BODIES, editedProfile, designedProfile, httpsUrl, isBrew, items, localId, normTitle, notesBlockPatch, notesWithBlock, number, object,
   optionalObject, originHost, profileAt, profileExecution, profileId as profileIdOf, shotKind, shotLine, shotRpm, shotSummary, shotText,
   shotWater, tagOf, text, unaccented, waterName, type ObjectData, type ShotLine,
 } from "./protocol";
 import {
-  beanBody, beanCard, batchBody, coffeeInput, coffeeOf, coffeeRef, coffeesOf, BAG_FIELDS, hasBagFields, hasBeanFields, matchesSearch, mergedExtras, sameCoffee, today,
-  type Coffee, type CoffeeInput,
+  beanBody, beanCard, batchBody, bagLastDate, coffeeInput, coffeeOf, coffeeRef, coffeesOf, BAG_FIELDS, hasBagFields, hasBeanFields, matchesSearch,
+  mergedExtras, oldBags, sameCoffee, today, type Coffee, type CoffeeInput, type RecentShot,
 } from "./coffees";
 import { round1, skinSurfaces, type Kept } from "./skin";
 import { decaid } from "./decaid";
@@ -25,6 +25,11 @@ const PHOTO_MAX = 600000;
 const WATERS_MAX = 20;
 const PHOTOS = "/store/beanJournal-photos";
 const WATERS = "/store/beanJournal/waters";
+// Old bags are offered for finishing once: this says it was.
+const OLD_BAGS = "/store/beanJournal/oldBags";
+const OLD_DAYS = 91;
+// Fewer than this and the list is short enough as it is: nothing is offered (and it may be later).
+const OLD_MIN = 10;
 type Host = {
   log(message: string): void;
   storage(command: { type: "read" | "write"; key: string; namespace: string; data?: unknown }): void;
@@ -203,9 +208,18 @@ export function createPlugin(host: Host) {
   const bagOnly = (input: CoffeeInput): CoffeeInput => Object.fromEntries(Object.entries(input).filter(([k]) => (BAG_FIELDS as readonly string[]).includes(k)));
   /**
    * The add/edit form. A new coffee whose roaster and name are a bean's already is answered as `duplicates` (the page
-   * asks: a bag of that one, or a new coffee anyway), and nothing is written.
+   * asks: a bag of that one, or a new coffee anyway), and nothing is written. `photo` (an assistant's; the page sets it
+   * apart) is checked before anything is written and set on the saved coffee.
    */
   async function saveCoffee(b: ObjectData) {
+    const withPhoto = b.photo !== undefined;
+    if (withPhoto) photoValue(b.photo);
+    const saved = await saveCoffeeFields(b);
+    if (!withPhoto || !("coffee" in saved)) return saved;
+    await setPhoto(saved.coffee.beanId, b.photo);
+    return { coffee: await coffeeById(saved.coffee.id) };
+  }
+  async function saveCoffeeFields(b: ObjectData): Promise<{ coffee: Coffee } | { duplicates: Coffee[] }> {
     const input = coffeeInput(b.fields);
     if (b.id == null) {
       if (b.addToBeanId != null) return { coffee: await newBag(localId(b.addToBeanId), bagOnly(input)) };
@@ -238,20 +252,86 @@ export function createPlugin(host: Host) {
     if (Object.keys(beanPatch).length) await local(`/beans/${enc(card.beanId)}`, "PUT", beanPatch);
     return { coffee: await coffeeById(result.id) };
   }
+  /**
+   * What goes in the photo's store slot: a data URL as the page makes it, or an https address kept as it is and shown
+   * from the web (Decaid's engine can't download an image to keep). Null: no photo.
+   */
+  function photoValue(photo: unknown): string | null {
+    if (photo === null) return null;
+    if (typeof photo !== "string") throw new Error("invalidArguments");
+    if (photo.startsWith("https://")) {
+      const url = httpsUrl(photo);
+      if (!url) throw new Error("invalidArguments");
+      return url;
+    }
+    if (!/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(photo)) throw new Error("invalidArguments");
+    if (photo.length > PHOTO_MAX) throw new Error("photoTooLarge");
+    return photo;
+  }
   async function setPhoto(beanId: unknown, photo: unknown) {
     const id = localId(beanId);
+    const value = photoValue(photo);
     const bean = object(await local(`/beans/${enc(id)}`));
     let stamp: string | null = null;
-    if (photo === null) {
+    if (value === null) {
       try { await local(`${PHOTOS}/${enc(id)}`, "DELETE"); } catch (e) { if (!(e instanceof Error) || e.message !== "notFound") throw e; }
     } else {
-      if (typeof photo !== "string" || !/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(photo)) throw new Error("invalidArguments");
-      if (photo.length > PHOTO_MAX) throw new Error("photoTooLarge");
-      await local(`${PHOTOS}/${enc(id)}`, "POST", photo);
+      await local(`${PHOTOS}/${enc(id)}`, "POST", value);
       stamp = new Date().toISOString();
     }
     await local(`/beans/${enc(id)}`, "PUT", { extras: mergedExtras(bean, { photo: stamp }) });
     return { coffee: await cardOfBean(id) };
+  }
+
+  // ── Old bags: a long imported list (years of bags, all "in use") is offered for finishing, once. ──
+  let oldMemo: { at: number; bags: ObjectData[] } | null = null;
+  async function oldBagsAsked() {
+    try { return !!(await local(OLD_BAGS)); } catch (e) {
+      if (e instanceof Error && e.message === "notFound") return false;
+      throw e;
+    }
+  }
+  async function findOldBags() {
+    if (await oldBagsAsked()) return { asked: true, bags: [] };
+    // The page asks each time it lists coffees until the user answers: the shots aren't read every time.
+    if (oldMemo && Date.now() - oldMemo.at < 600000) return { asked: false, bags: oldMemo.bags };
+    const since = today(new Date(Date.now() - OLD_DAYS * 86400000));
+    const recent: RecentShot[] = [];
+    for (let at = 0, done = false; at < 50 && !done; at++) {
+      const list = items(object(await local(`/shots?limit=100&offset=${at * 100}&order=desc`)).items);
+      for (const s of list) {
+        if (text(s.timestamp).slice(0, 10) < since) { done = true; break; }
+        const context = optionalObject(optionalObject(s.workflow).context);
+        recent.push({ batchId: text(context.beanBatchId) || null, roaster: text(context.coffeeRoaster), name: text(context.coffeeName) });
+      }
+      if (list.length < 100) done = true;
+    }
+    // The next shot's coffee is in use, whatever its dates say.
+    let next = "";
+    try { next = text(optionalObject(object(await local("/workflow")).context).beanBatchId); } catch { /* no workflow yet */ }
+    const found = oldBags((await readShelf(true)).coffees, recent, since).filter((c) => !next || c.batchId !== next);
+    const bags = found.length >= OLD_MIN ? found.map((c) => ({ ...c, lastDate: bagLastDate(c) })) : [];
+    oldMemo = { at: Date.now(), bags };
+    return { asked: false, bags };
+  }
+  /** The user's answer: the bags chosen are archived (never deleted), and it isn't asked again. */
+  async function finishOldBags(b: ObjectData) {
+    const ids = b.ids;
+    if (!Array.isArray(ids) || ids.length > 5000 || ids.some((x) => typeof x !== "string")) throw new Error("invalidArguments");
+    if (ids.length && b.confirmed !== true) throw new Error("confirmation");
+    const s = await readShelf(true);
+    let finished = 0;
+    for (const id of ids) {
+      const c = s.coffees.find((x) => x.id === id);
+      if (!c || c.finished) continue;
+      // One write each, without the edit's re-reads: hundreds of bags in a few seconds.
+      if (c.batchId) await local(`/bean-batches/${enc(c.batchId)}`, "PUT", { archived: true });
+      else await local(`/beans/${enc(c.beanId)}`, "PUT", { archived: true });
+      finished++;
+    }
+    await local(OLD_BAGS, "POST", { askedAt: new Date().toISOString(), finished });
+    oldMemo = null;
+    return { finished };
   }
 
   // ── Waters typed before (newest first), for the page's list ──
@@ -1019,6 +1099,8 @@ export function createPlugin(host: Host) {
       case "save-coffee": return serial(() => saveCoffee(b));
       case "add-bag": return serial(async () => ({ coffee: await newBag(localId(b.beanId), bagOnly(coffeeInput(b.fields))) }));
       case "set-photo": return serial(() => setPhoto(b.beanId, b.photo));
+      case "old-bags": return findOldBags();
+      case "finish-old-bags": return serial(() => finishOldBags(b));
       case "select": return serial(async () => ({ coffee: await selectCoffee(b.coffeeId ?? null) }));
       case "choose-coffee": return serial(() => chooseCoffee(b));
       case "shot": return shot(b.offset, b.filter, b.shotId);
