@@ -1,0 +1,10 @@
+#!/bin/sh
+# GitHub Free can't protect main on this private repository, so this clone refuses to push to it:
+# changes reach main only through a pull request that the owner merges.
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "pre-push: direct pushes to main are blocked. Push a branch and open a pull request." >&2
+    exit 1
+  fi
+done
+exit 0

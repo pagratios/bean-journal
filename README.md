@@ -116,6 +116,7 @@ in Decaid's plugin list wins.
 ## Build, test, preview
 
 ```sh
+git config core.hooksPath .githooks   # once per clone: blocks direct pushes to main (changes go through a PR)
 npm install
 npm run typecheck
 npm test           # vitest, with a fake Decaid; includes a run of the built bundle without a URL class (as in Decaid)
