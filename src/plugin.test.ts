@@ -278,6 +278,38 @@ describe("Bean Journal plugin", () => {
     expect((await t.ok({ action: "save-coffee", id: made.id, fields: {}, photo: null })).coffee.photo).toBeNull();
   });
 
+  it("offers old bags for finishing once, archiving only those the user chose", async () => {
+    const day = (ago: number) => new Date(Date.now() - ago * 86400000).toISOString();
+    const beans = Array.from({ length: 14 }, (_, i) => ({ id: `b${i}`, roaster: "R", name: `Coffee ${i}`, decaf: false, archived: false, createdAt: day(1) }));
+    const batches = beans.map((b, i) => ({ id: `t${i}`, beanId: b.id, frozen: false, archived: false, createdAt: day(1), ...(i === 0 ? { roastDate: day(10).slice(0, 19) } : {}) }));
+    const t = setup({}, { beans, batches });
+    // t0 roasted lately, t1 had a shot lately, t2 is the next shot's; t3's shot is too old to count.
+    t.shots.set("s1", { id: "s1", timestamp: day(5), workflow: { context: { beanBatchId: "t1" } } });
+    t.shots.set("s2", { id: "s2", timestamp: day(200), workflow: { context: { beanBatchId: "t3" } } });
+    await t.put({ context: { beanBatchId: "t2" } });
+    const offered = await t.ok({ action: "old-bags" });
+    expect(offered.asked).toBe(false);
+    expect(offered.bags.map((c: ObjectData) => c.id)).toEqual(Array.from({ length: 11 }, (_, i) => `t${i + 3}`));
+    expect(offered.bags[0]).toMatchObject({ lastDate: null });
+
+    expect((await t.control({ action: "finish-old-bags", ids: ["t3"] })).data.code).toBe("confirmation");
+    expect((await t.ok({ action: "finish-old-bags", ids: ["t3", "t4", "nope"], confirmed: true })).finished).toBe(2);
+    expect(t.batches.filter((b) => b.archived).map((b) => b.id)).toEqual(["t3", "t4"]);
+    expect(t.calls.some((c) => c.method === "DELETE")).toBe(false);
+    expect(await t.ok({ action: "old-bags" })).toEqual({ asked: true, bags: [] });
+  });
+
+  it("offers nothing when few bags are old, and asks again later", async () => {
+    const t = setup({}, { beans: [{ id: "b1", roaster: "R", name: "N", decaf: false, archived: false, createdAt: "2020-01-01T00:00:00" }],
+      batches: [{ id: "t1", beanId: "b1", frozen: false, archived: false, createdAt: "2020-01-01T00:00:00" }] });
+    expect(await t.ok({ action: "old-bags" })).toEqual({ asked: false, bags: [] });
+    expect(t.store.has("beanJournal/oldBags")).toBe(false);
+    // "Keep all": no bag changes, and it isn't asked again.
+    expect(await t.ok({ action: "finish-old-bags", ids: [] })).toEqual({ finished: 0 });
+    expect(t.batches[0].archived).toBe(false);
+    expect(await t.ok({ action: "old-bags" })).toEqual({ asked: true, bags: [] });
+  });
+
   it("chooses a coffee for the next shot, making a bag for a bean without one, and keeps or loads its last or best shot", async () => {
     const t = setup({}, {
       beans: [{ id: "b1", roaster: "R", name: "Kiambu", decaf: false, archived: false, createdAt: "2026-01-01T00:00:00" },

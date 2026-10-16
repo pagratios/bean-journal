@@ -126,6 +126,25 @@ export function sameCoffee(beans: ObjectData[], roaster: unknown, name: unknown)
   return n ? beans.filter((b) => fold(b.roaster) === r && fold(b.name) === n) : [];
 }
 
+/** The newest of a bag's own dates (roasted, bought, opened, frozen, thawed), or null. */
+export function bagLastDate(c: Coffee): string | null {
+  return [c.roastDate, c.buyDate, c.openDate, c.freezeDate, c.thawDate].reduce<string | null>((a, d) => d && (!a || d > a) ? d : a, null);
+}
+/** A shot since the cut-off, as far as old bags care: its bag, else the coffee it names. */
+export type RecentShot = { batchId: string | null; roaster: string; name: string };
+/**
+ * Bags still in use that show no sign of use since `since` (YYYY-MM-DD): no shot of them, none of their own dates that
+ * recent, and not in the freezer (frozen bags keep for months). When a bag was added says nothing: an import dates
+ * every bag the day it ran.
+ */
+export function oldBags(coffees: Coffee[], recent: RecentShot[], since: string): Coffee[] {
+  const usedBags = new Set(recent.map((s) => s.batchId).filter(Boolean));
+  const named = (roaster: unknown, name: unknown) => `${fold(roaster)}|${fold(name)}`;
+  const usedNames = new Set(recent.filter((s) => !s.batchId && fold(s.name)).map((s) => named(s.roaster, s.name)));
+  return coffees.filter((c) => !c.finished && !c.frozen && !(c.batchId && usedBags.has(c.batchId))
+    && !usedNames.has(named(c.roaster, c.name)) && (bagLastDate(c) ?? "") < since);
+}
+
 /** Every word of the search is somewhere in the coffee's words. */
 export function matchesSearch(coffee: Coffee, query: unknown) {
   const words = fold(query).split(" ").filter(Boolean);

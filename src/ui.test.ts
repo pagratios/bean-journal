@@ -64,7 +64,7 @@ describe("the page", () => {
   it("uses the contract's actions", () => {
     for (const action of ["status", "coffees", "coffee", "save-coffee", "add-bag", "set-photo", "select", "choose-coffee", "shot", "shots",
       "shot-by-id", "latest", "rate-shot", "assign-coffee", "delete-shot", "load-shot", "next-settings", "grinders", "waters",
-      "update-preferences", "shot-text", "mcp"]) {
+      "update-preferences", "shot-text", "mcp", "old-bags", "finish-old-bags"]) {
       expect(source).toContain(`api("${action}"`);
     }
     expect(source).toContain('api("delete-shot", { shotId: s.id, confirmed: true })');

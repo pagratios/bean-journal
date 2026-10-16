@@ -32,7 +32,9 @@ a long-press menu item, a screensaver button and overlay pages, from small to fu
   **Open in Visualizer** and Delete (it asks). Edits are saved on Decaid's shot, and saved before the page closes
   when an espresso starts.
 - **Coffees**: your bags, with photo, roaster, origin, process, grams left, roast date and frozen; search and filters;
-  finished bags last and greyed, behind the **Finished** switch. **Add coffee**.
+  finished bags last and greyed, behind the **Finished** switch. **Add coffee**. With 10 or more old bags in use (no
+  shot and no roast, purchase, opening or freezer date in the last 3 months, not frozen; an import's, say), the list
+  offers once to finish them: you untick any to keep (bags with grams left start unticked), or Keep all.
 - **A coffee's page**: every detail, its bags, its shots (last and best marked, load a shot's settings), Use for next
   shot, Edit, Freeze / Thaw, Finished.
 - **Add / edit a coffee**: roaster, name, country, region, producer, farm, varieties, altitude, process, decaf, tasting
@@ -53,6 +55,7 @@ Streamline with DYE2 on clears the coffee, grinder and RPM after each shot; Bean
 | A bag | A bean batch: roast date and level, weight, grams left (Decaid takes each shot's dose off), frozen and its dates, opened, best before, notes; harvest, cupping score, price and currency, buy date (set by assistants). Finished = archived. |
 | A photo | The key-value store, `beanJournal-photos/<bean id>`: a resized JPEG, or an https image address an assistant gave (the page shows it from the web). |
 | Waters | The next shot's in the workflow (`context.extras.beanJournal.water`), each shot's in its annotations; the recent ones in `beanJournal/waters`. |
+| Old bags offered | `beanJournal/oldBags` in the key-value store, once answered. |
 | A shot's rating | Decaid's own fields: `enjoyment` (score ÷ 10), `espressoNotes`, `drinkTds`, `drinkEy`, actual dose and yield; taste and body in `annotations.extras.beanJournal`. Grinder, grind and RPM (`extras.rpm`) on the shot's workflow context. |
 
 Bean Journal never deletes beans, batches or grinders. It deletes a shot only when you confirm it.

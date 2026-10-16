@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { batchBody, beanBody, coffeeInput, coffeeOf, coffeeRef, coffeesOf, day, decaidDay, matchesSearch, mergedExtras, sameCoffee, today } from "./coffees";
+import { bagLastDate, batchBody, beanBody, coffeeInput, coffeeOf, coffeeRef, coffeesOf, day, decaidDay, matchesSearch, mergedExtras, oldBags, sameCoffee, today } from "./coffees";
 
 const bean = (id: string, more: Record<string, unknown> = {}) => ({ id, roaster: "Square Mile", name: "Red Brick", decaf: false, archived: false, createdAt: "2026-01-01T10:00:00", ...more });
 const batch = (id: string, beanId: string, more: Record<string, unknown> = {}) => ({ id, beanId, frozen: false, archived: false, createdAt: "2026-02-01T10:00:00", ...more });
@@ -47,6 +47,18 @@ describe("Coffees from Decaid's beans and batches", () => {
     expect(coffeeRef("bean:b1")).toEqual({ beanId: "b1" });
     expect(coffeeRef("t1")).toEqual({ batchId: "t1" });
     expect(() => coffeeRef("bean:../x")).toThrow("invalidId");
+  });
+
+  it("finds old bags: in use, not frozen, no recent shot (by bag, else by name) and no recent date of their own", () => {
+    const beans = [bean("b1", { name: "Used" }), bean("b2", { name: "Named" }), bean("b3", { name: "Old" }), bean("b4", { name: "Fresh" }), bean("b5", { name: "Cold" }), bean("b6", { name: "Bare" })];
+    const list = coffeesOf(beans, [
+      batch("t1", "b1", { roastDate: "2026-01-01T00:00:00" }), batch("t2", "b2"), batch("t3", "b3", { roastDate: "2026-06-01T00:00:00", openDate: "2026-06-20T00:00:00" }),
+      batch("t4", "b4", { buyDate: "2026-09-01T00:00:00" }), batch("t5", "b5", { frozen: true }), batch("t6", "b3", { archived: true }),
+    ]);
+    const recent = [{ batchId: "t1", roaster: "", name: "" }, { batchId: null, roaster: "square mile", name: "NAMED" }, { batchId: null, roaster: "", name: "" }];
+    expect(oldBags(list, recent, "2026-07-17").map((c) => c.id).sort()).toEqual(["bean:b6", "t3"]);
+    expect(bagLastDate(list.find((c) => c.id === "t3")!)).toBe("2026-06-20");
+    expect(bagLastDate(list.find((c) => c.id === "t2")!)).toBeNull();
   });
 
   it("checks the form and converts dates both ways", () => {
