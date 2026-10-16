@@ -247,7 +247,7 @@ const en = {
   "confirmPutAway": "Put {name} away? It leaves the grinder lists; shots made with it keep it, and Restore brings it back.",
   "grinderPutAway": "{name} put away.",
   "grinderRestored": "{name} is back.",
-  "badGrinder": "A grinder needs a name; its steps must be positive numbers.",
+  "badGrinder": "A grinder needs a name; its grind step must be a positive number and its RPM step a whole one.",
   "groupWaters": "Waters",
   "watersHelp": "The waters the water field offers. Shots keep the water they were made with.",
   "addWater": "Add water",

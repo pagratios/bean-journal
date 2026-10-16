@@ -100,6 +100,8 @@ function client(t: Copy) {
   const same = (a: string, b: string) => a.trim().toLocaleLowerCase(locale) === b.trim().toLocaleLowerCase(locale);
   const grinderNamed = (text: string) => text.trim() ? grinders.find((g) => same(g.model, text)) ?? null : null;
   const grinderText = (id: string | null, model: string) => model || grinders.find((g) => g.id === id)?.model || "";
+  // RPM is whole numbers: a fractional step (set in another app) would round back to where it was.
+  const rpmStepOf = (g: Grinder | null | undefined) => Math.max(1, Math.round(g?.rpmSmallStep || 10));
   // The shot on screen has edits that Done hasn't stored yet (renderShot clears it).
   let unsaved = false;
   let saveShot: (() => Promise<boolean>) | null = null;
@@ -1056,7 +1058,7 @@ function client(t: Copy) {
     };
     grindField.minus.onclick = () => nudgeGrind(-1);
     grindField.plus.onclick = () => nudgeGrind(1);
-    const rpmField = stepper(s.rpm, () => grinderNow()?.rpmSmallStep || 10, 0, t.rpm);
+    const rpmField = stepper(s.rpm, () => rpmStepOf(grinderNow()), 0, t.rpm);
     const rpmIn = rpmField.input;
     rpmIn.inputMode = "numeric";
     cell(t.grinder, grinder.box, true);
@@ -1990,17 +1992,18 @@ function client(t: Copy) {
     input.type = "text"; input.maxLength = 80; input.value = value; input.placeholder = placeholder; input.autocomplete = "off";
     return input;
   }
-  function stepField(value: number | null) {
+  // `whole`: RPM's step, a whole number (one Decaid has with a fraction shows rounded, as − / + use it).
+  function stepField(value: number | null, whole = false) {
     const input = el("input") as HTMLInputElement;
-    input.type = "number"; input.min = "0"; input.step = "any"; input.inputMode = "decimal";
-    input.value = value === null ? "" : String(value); input.placeholder = t.stepPlaceholder;
+    input.type = "number"; input.min = whole ? "1" : "0"; input.step = whole ? "1" : "any"; input.inputMode = whole ? "numeric" : "decimal";
+    input.value = value === null ? "" : String(whole ? Math.max(1, Math.round(value)) : value); input.placeholder = t.stepPlaceholder;
     return input;
   }
   // Empty: no step (Decaid's default); undefined: not a step.
-  const readStep = (input: HTMLInputElement) => {
+  const readStep = (input: HTMLInputElement, whole = false) => {
     if (input.value.trim() === "") return null;
     const v = readNum(input);
-    return v !== null && v > 0 ? v : undefined;
+    return v !== null && v > 0 && (!whole || Number.isInteger(v)) ? v : undefined;
   };
   function settingsRow(title: string, hint: string, className = "") {
     const row = el("div", `set-row${className ? ` ${className}` : ""}`), text = el("span", "set-text"), control = el("span", "set-control");
@@ -2044,11 +2047,11 @@ function client(t: Copy) {
   // A new grinder (g null) or one of Decaid's: only what changed is sent.
   function grinderCard(g: Data | null) {
     const model = textField(str(g?.model)), burrs = textField(str(g?.burrs), t.burrsPlaceholder);
-    const grindStep = stepField(num(g?.settingSmallStep)), rpmStep = stepField(num(g?.rpmSmallStep));
+    const grindStep = stepField(num(g?.settingSmallStep)), rpmStep = stepField(num(g?.rpmSmallStep), true);
     model.setAttribute("aria-label", t.name);
     editCard(g ? t.editGrinder : t.addGrinder,
       [cardField(t.name, model, true), cardField(t.burrs, burrs, true), cardField(t.grindStep, grindStep), cardField(t.rpmStep, rpmStep)], async () => {
-        const name = model.value.trim(), steps = [readStep(grindStep), readStep(rpmStep)];
+        const name = model.value.trim(), steps = [readStep(grindStep), readStep(rpmStep, true)];
         if (!name || steps.some((s) => s === undefined)) throw new Error(t.badGrinder);
         const body: Data = {};
         if (!g || name !== str(g.model)) body.model = name;
@@ -2294,7 +2297,7 @@ function client(t: Copy) {
       const grinderStart = grinderText(str(next.grinderId) || null, str(next.grinderModel));
       const grinder = grinderInput(grinderStart);
       cell(t.grinder, grinder.box, true);
-      const rpm = stepper(num(next.rpm), () => grinderNamed(grinder.input.value)?.rpmSmallStep || 10, 0, t.rpm);
+      const rpm = stepper(num(next.rpm), () => rpmStepOf(grinderNamed(grinder.input.value)), 0, t.rpm);
       rpm.input.inputMode = "numeric";
       cell(t.rpm, rpm.box);
       const waterStart = str(next.water);

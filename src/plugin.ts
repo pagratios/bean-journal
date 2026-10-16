@@ -310,10 +310,11 @@ export function createPlugin(host: Host) {
       if (b.burrs !== null && typeof b.burrs !== "string") throw new Error("invalidArguments");
       body.burrs = text(b.burrs).trim().slice(0, 80) || null;
     }
-    for (const [field, max] of [["settingSmallStep", 100], ["rpmSmallStep", 1000]] as const) {
+    // RPM is whole numbers, so its step is one too.
+    for (const [field, max, whole] of [["settingSmallStep", 100, false], ["rpmSmallStep", 1000, true]] as const) {
       if (!(field in b)) continue;
       const value = b[field] === null ? null : number(b[field]);
-      if (value === undefined || (value !== null && (value <= 0 || value > max))) throw new Error("invalidArguments");
+      if (value === undefined || (value !== null && (value <= 0 || value > max || (whole && !Number.isInteger(value))))) throw new Error("invalidArguments");
       body[field] = value;
     }
     if (id !== null && !Object.keys(body).length) throw new Error("invalidArguments");

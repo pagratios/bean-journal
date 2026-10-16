@@ -478,6 +478,7 @@ describe("Bean Journal plugin", () => {
     expect((await t.control({ action: "save-grinder", model: "old GRINDER" })).data.code).toBe("grinderExists");
     expect((await t.control({ action: "save-grinder", model: "" })).status).toBe(400);
     expect((await t.control({ action: "save-grinder", model: "X", rpmSmallStep: -5 })).status).toBe(400);
+    expect((await t.control({ action: "save-grinder", model: "X", rpmSmallStep: 0.1 })).status).toBe(400);
     expect((await t.control({ action: "save-grinder", id: "nope", burrs: "x" })).data.code).toBe("grinderNotFound");
     const edited = (await t.ok({ action: "save-grinder", id: made.id, model: "Niche Zero", burrs: null, rpmSmallStep: 50 })).grinder;
     expect(edited).toMatchObject({ id: made.id, model: "Niche Zero", burrs: "", settingSmallStep: 1, rpmSmallStep: 50 });
@@ -490,6 +491,7 @@ describe("Bean Journal plugin", () => {
     await t.ok({ action: "archive-grinder", id: made.id, archived: false });
     expect((await t.control({ action: "archive-grinder", id: made.id })).status).toBe(400);
     expect(t.calls.some((c) => c.method === "DELETE")).toBe(false);
+    expect((await t.ok({ action: "save-grinder", model: "Y", settingSmallStep: 0.1, rpmSmallStep: 25 })).grinder).toMatchObject({ settingSmallStep: 0.1, rpmSmallStep: 25 });
 
     expect((await t.ok({ action: "save-water", name: "Volvic" })).waters).toEqual(["Volvic"]);
     expect((await t.ok({ action: "save-water", name: " Lotus\tLight " })).waters).toEqual(["Lotus Light", "Volvic"]);
