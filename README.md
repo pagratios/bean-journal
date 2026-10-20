@@ -7,7 +7,7 @@ other apps that read Decaid see it too.
 
 It is also a worked example of what [Streamline's plugin surfaces](https://github.com/decentespresso/streamline-js/blob/main/docs/plugin-surfaces.md)
 can do: a header button, tile hints and lines, a step-size pill, a ratio lock, the ratio's numpad, the live shot strip,
-a long-press menu item, a screensaver button, small overlay cards and full-screen pages.
+a long-press menu item, a screensaver button and overlay pages, from small to full screen.
 
 ## What it does
 
@@ -15,7 +15,7 @@ a long-press menu item, a screensaver button, small overlay cards and full-scree
 
 | Where | What |
 | --- | --- |
-| Header | The coffee for the next shot (and its roaster). Opens Bean Journal as a full-screen page; with no coffee chosen, the coffee picker. Done or × returns to Streamline. |
+| Header | The coffee for the next shot (and its roaster). Opens Bean Journal full screen over the dashboard; with no coffee chosen, the coffee picker. |
 | Grind | "Last 1.8": the grind of this coffee's last shot, a tap sets it. Under the label: the next shot's grinder · RPM · water, which opens a small card to choose them. |
 | Dose | A ±1 / 0.5 / 0.1 g step pill for the − / + buttons, and ⚖ Scale, which sets the dose from the scale. |
 | Drink | 🔒 Ratio (Keep ratio: a new dose moves the drink weight with it, in the same write), a step pill, and a tap on "(1:2.2)" opens the numpad for a new ratio. |
@@ -121,9 +121,9 @@ address (kept as it is and shown from the web; Decaid's plugins can't download a
 - Or download `bean-journal.reaplugin.zip` from the [releases](https://github.com/pagratios/bean-journal/releases)
   (or build it below): Decaid → Plugins → `+` → ZIP file.
 
-Turn it on; Streamline 0.2.14 or newer (with plugin surfaces) shows it at its next read of the plugins.
-The header, screensaver and shot-history buttons use full-screen page navigation, which works on 0.2.14 too:
-that release does not support full-screen overlays. The next-shot gear card still opens as a small overlay.
+Turn it on; Streamline 0.2.15 or newer shows it at its next read of the plugins. The header, screensaver and
+shot-history buttons open Bean Journal full screen over the dashboard (an overlay of `size: "full"`, new in 0.2.15;
+0.2.14 opens it in its smaller default window).
 
 Bean Journal can be installed beside other plugins. If another plugin also asks for the header button, the first one
 in Decaid's plugin list wins.

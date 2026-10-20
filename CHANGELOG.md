@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- Needs Streamline 0.2.15 or newer: the header, screensaver and shot-history pages open full screen over the dashboard
+  again (Streamline's overlay `size: "full"`), so going back no longer reloads Streamline.
+
 ## 0.1.1
 
 - Open the header, screensaver and shot-history pages full screen on Streamline 0.2.14 too, using page navigation
