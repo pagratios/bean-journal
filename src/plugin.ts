@@ -7,8 +7,9 @@ import {
   beanBody, beanCard, batchBody, bagLastDate, coffeeInput, coffeeOf, coffeeRef, coffeesOf, BAG_FIELDS, hasBagFields, hasBeanFields, matchesSearch,
   mergedExtras, oldBags, sameCoffee, today, type Coffee, type CoffeeInput, type RecentShot,
 } from "./coffees";
-import { round1, skinSurfaces, type Kept } from "./skin";
+import { round1, skinSurfaces } from "./skin";
 import { decaid } from "./core/decaid";
+import { createRatioMemory, type RatioChange } from "./core/ratio-memory";
 import { copy, page } from "./ui";
 import { MCP_CONFIRMS, MCP_LEVELS, MCP_TOKEN, mcpMessage, rateLimit, type McpConfirm, type McpLevel } from "./mcp";
 
@@ -25,6 +26,7 @@ const PHOTO_MAX = 600000;
 const WATERS_MAX = 20;
 const PHOTOS = "/store/beanJournal-photos";
 const WATERS = "/store/beanJournal/waters";
+const RATIOS = "/store/beanJournal/ratioMemory";
 // Old bags are offered for finishing once: this says it was.
 const OLD_BAGS = "/store/beanJournal/oldBags";
 const OLD_DAYS = 91;
@@ -449,16 +451,14 @@ export function createPlugin(host: Host) {
    * The workflow written by the plugin: whatever it sets of the coffee, grinder and speed also goes in the kept gear,
    * so Streamline's clean-up after the next shot puts back what the user chose here.
    */
-  async function putNext(context: ObjectData, profile?: ObjectData) {
+  async function putNext(context: ObjectData, profile?: ObjectData, ratioChange: RatioChange = {}) {
     const gear: ObjectData = {};
     for (const k of GEAR_KEYS) if (k in context) gear[k] = context[k] ?? null;
     const extras = optionalObject(context.extras);
     if ("rpm" in extras) gear.rpm = extras.rpm ?? null;
     const tag = optionalObject(extras.beanJournal);
     const sent = Object.keys(gear).length ? { ...context, extras: { ...extras, beanJournal: { ...tag, gear: { ...optionalObject(tag.gear), ...gear } } } } : context;
-    const saved = optionalObject(await local("/workflow", "PUT", { ...(profile ? { profile } : {}), context: sent }));
-    // Decaid answers the workflow as merged; read again only if it didn't.
-    return saved.context ? saved : object(await local("/workflow"));
+    return ratioMemory.change({ ...(profile ? { profile } : {}), context: sent }, ratioChange);
   }
   async function current(workflow?: ObjectData) {
     workflow ??= object(await local("/workflow"));
@@ -494,7 +494,7 @@ export function createPlugin(host: Host) {
     const phase = optionalObject(snapshot.state).state;
     if (phase !== "idle" && phase !== "schedIdle" && phase !== "sleeping") throw new Error("machineBusy");
   }
-  /** The next shot's coffee only; its settings stay. */
+  /** The next shot's coffee; a known coffee/profile pair restores its ratio choice. */
   async function selectCoffee(coffeeId: unknown) {
     await notBrewing();
     const coffee = coffeeId == null ? null : await bagged(await coffeeById(coffeeId));
@@ -534,6 +534,7 @@ export function createPlugin(host: Host) {
       } catch { /* gone: nothing to keep */ }
     }
     await restore(context, from);
+    await ratioMemory.follow();
   }
   /**
    * Streamline's clean-up is undone: within a while after a shot (and after the plugin starts) whatever went missing
@@ -566,6 +567,7 @@ export function createPlugin(host: Host) {
     const same = (Object.keys(kept) as (keyof Gear)[]).every((k) => (k === "rpm" ? number(backup.rpm) ?? null : text(backup[k]) || null) === kept[k]);
     if (!same) await local("/workflow", "PUT", { context: { extras: { beanJournal: { gear: kept } } } });
     if (cleanUp) await restore(context, kept);
+    await ratioMemory.follow();
   }
   /**
    * Stock Streamline sends its cached copy of the profile with every dose or drink change (− / +, the numpad, the
@@ -599,79 +601,49 @@ export function createPlugin(host: Host) {
     seenWorkflow = saved.profile ? saved : { ...now, profile };
   }
 
-  /**
-   * Keep ratio: with `extras.lockRatio` on, a new dose moves the drink weight with it. Stock Streamline only writes
-   * the dose (and the yield it shows, which may be from before the plugin's last write), so the plugin follows Decaid's
-   * workflowUpdated and writes the yield itself. `ratio` is the user's, not recomputed from the rounded weights, so
-   * steps don't drift it.
-   */
-  let kept: Kept | null = null;
-  let keeping: Promise<unknown> = Promise.resolve();
-  function remember(workflow: ObjectData) {
-    const context = optionalObject(workflow.context);
-    const dose = number(context.targetDoseWeight), yieldG = number(context.targetYield);
-    const title = text(optionalObject(workflow.profile).title);
-    const before = kept;
-    if (!dose || dose <= 0 || !yieldG || yieldG <= 0) { kept = null; return before; }
-    const same = !!before && before.title === title && Math.abs(dose - before.dose) < 0.05 && Math.abs(yieldG - before.yield) < 0.05;
-    // A new dose whose drink is dose × the kept ratio (the skin's keepRatio, or the plugin's own write): the ratio stays
-    // the user's, not the one of the rounded weights, so it doesn't drift by a hundredth at a small dose.
-    const followed = !!before && before.title === title && Math.abs(yieldG - round1(dose * before.ratio)) < 0.06;
-    const replaced = before?.replaced && Date.now() - before.replaced.at < 10000 ? before.replaced : undefined;
-    kept = { dose, yield: yieldG, title, ratio: same || followed ? before!.ratio : yieldG / dose, replaced };
-    return before;
-  }
-  /** The write Keep ratio wants after this workflow, or null. */
-  function keepRatio(workflow: ObjectData): ObjectData | null {
-    const before = remember(workflow);
-    if (!before || !kept || optionalObject(optionalObject(workflow.context).extras).lockRatio !== true) return null;
-    if (before.title !== kept.title || Math.abs(kept.dose - before.dose) < 0.05) return null;
-    // The yield stock sent with the dose: the one it showed, which is either ours or the one we just replaced.
-    const sameYield = Math.abs(kept.yield - before.yield) < 0.05 || (!!kept.replaced && Math.abs(kept.yield - kept.replaced.yield) < 0.05);
-    if (!sameYield) return null;
-    const yieldG = round1(kept.dose * before.ratio);
-    if (yieldG < 1 || yieldG > 2000 || Math.abs(yieldG - kept.yield) < 0.05) return null;
-    const profile = optionalObject(workflow.profile);
-    // Set before writing, so Decaid's echo of this write isn't taken for a new dose.
-    kept = { ...kept, yield: yieldG, ratio: before.ratio, replaced: { yield: kept.yield, at: Date.now() } };
-    // Only the stop weight of the profile: Decaid merges it, and the event's whole profile may still carry the
-    // temperatures a Brew change has just replaced (sending them back would undo it).
-    return { context: { targetYield: yieldG }, ...(Object.keys(profile).length ? { profile: { target_weight: yieldG } } : {}) };
-  }
-  /**
-   * Each workflow change in order. Decaid's event carries the workflow; one that doesn't (another Decaid version) is
-   * read instead. Not serial(): a page's write waiting in the queue must not hold the drink weight back.
-   */
-  function followRatio(payload: ObjectData) {
-    const given = payload.workflow ? optionalObject(payload.workflow) : payload;
-    const whole = given.context != null && typeof given.context === "object" && given.profile != null;
-    keeping = keeping.then(async () => {
-      if (stopped) return;
-      const write = keepRatio(whole ? given : object(await local("/workflow")));
-      if (write) await local("/workflow", "PUT", write);
-    }).catch(log("Keep ratio"));
-  }
+  const ratioMemory = createRatioMemory({
+    readWorkflow: async () => object(await local("/workflow")),
+    writeWorkflow: async (patch) => {
+      const saved = optionalObject(await local("/workflow", "PUT", patch));
+      return saved.context ? saved : null;
+    },
+    readMemory: async () => {
+      try { return await local(RATIOS); } catch (e) {
+        if (e instanceof Error && e.message === "notFound") return null;
+        throw e;
+      }
+    },
+    writeMemory: async (data) => { await local(RATIOS, "POST", data); },
+    coffeeKey: async (workflow) => {
+      const id = text(optionalObject(workflow.context).beanBatchId);
+      if (!id) return null;
+      if (!beanOfBatch.has(id)) {
+        const batch = object(await local(`/bean-batches/${enc(localId(id))}`));
+        beanOfBatch.set(id, localId(batch.beanId));
+      }
+      return beanOfBatch.get(id)!;
+    },
+  });
   /** The skin's Ratio mode and Keep ratio pill (stock Streamline's `call`): `{ratio}` sets the drink weight, `{lock}` the lock. */
   async function ratioCall(b: ObjectData) {
     if ("lock" in b) {
       if (b.lock !== 0 && b.lock !== 1) throw new Error("invalidArguments");
-      const saved = optionalObject(await local("/workflow", "PUT", { context: { extras: { lockRatio: b.lock === 1 } } }));
-      if (saved.context) remember(saved);
+      await notBrewing();
+      await ratioMemory.change({ context: { extras: { lockRatio: b.lock === 1 } } }, { explicit: true });
       return { lock: b.lock };
     }
     const ratio = number(b.ratio);
     if (ratio === undefined || ratio < 1 || ratio > 20) throw new Error("invalidArguments");
     await notBrewing();
-    const workflow = object(await local("/workflow"));
-    const dose = number(optionalObject(workflow.context).targetDoseWeight);
-    if (!dose || dose <= 0) throw new Error("invalidArguments");
-    const yieldG = round1(dose * ratio);
-    if (yieldG < 1 || yieldG > 2000) throw new Error("invalidArguments");
-    const profile = optionalObject(workflow.profile);
-    kept = { dose, yield: yieldG, title: text(profile.title), ratio };
-    // Answered after the write: the skin reads the workflow again as soon as the call succeeds.
-    await local("/workflow", "PUT", { context: { targetYield: yieldG }, ...(Object.keys(profile).length ? { profile: { target_weight: yieldG } } : {}) });
-    return { ratio: round1(yieldG / dose), yield: yieldG };
+    const saved = await ratioMemory.change((workflow) => {
+      const dose = number(optionalObject(workflow.context).targetDoseWeight);
+      if (!dose || dose <= 0) throw new Error("invalidArguments");
+      const yieldG = round1(dose * ratio);
+      if (yieldG < 1 || yieldG > 2000) throw new Error("invalidArguments");
+      return { context: { targetYield: yieldG } };
+    }, { ratio });
+    const context = object(saved.context);
+    return { ratio: round1(Number(context.targetYield) / Number(context.targetDoseWeight)), yield: context.targetYield };
   }
 
   // ── Streamline's surfaces ──
@@ -686,13 +658,12 @@ export function createPlugin(host: Host) {
   }
   /** The skin waits 2 s at most, so this reads only the workflow and (kept a minute) the coffee's last grind. */
   async function skinAnswer() {
-    const workflow = object(await local("/workflow"));
-    if (!kept) remember(workflow);
+    const workflow = await ratioMemory.follow();
     const context = optionalObject(workflow.context);
     const name = text(context.coffeeName) || (!context.beanBatchId ? text(keptGear(context).coffeeName) : "");
     let grind = "";
     if (name) try { grind = await lastGrindOf(name); } catch { /* Decaid busy: no hint this time */ }
-    const answer = skinSurfaces({ s: copy().skin, workflow, kept, lastGrind: grind, now: Date.now() });
+    const answer = skinSurfaces({ s: copy().skin, workflow, kept: ratioMemory.kept, lastGrind: grind, now: Date.now() });
     lastSkin = answer;
     return answer;
   }
@@ -900,20 +871,23 @@ export function createPlugin(host: Host) {
     return { context, extras, tag };
   }
   const withTag = (extras: ObjectData, tag: ObjectData) => Object.keys(tag).length ? { ...extras, beanJournal: { ...optionalObject(extras.beanJournal), ...tag } } : extras;
-  /** The next shot's grinder, speed, grind, water and ratio lock; everything else stays. Refused while a shot runs. */
+  /** The next shot's coffee and gear, in one write so an explicit lock wins over the coffee's memory. */
   async function nextSettings(b: ObjectData) {
     if (b.grind != null && typeof b.grind !== "string") throw new Error("invalidArguments");
     const grinder = await nextGrinder(b);
-    if (!Object.keys(grinder.context).length && !Object.keys(grinder.extras).length && !Object.keys(grinder.tag).length && b.grind === undefined) {
+    if (!Object.keys(grinder.context).length && !Object.keys(grinder.extras).length && !Object.keys(grinder.tag).length
+      && b.grind === undefined && b.coffeeId === undefined) {
       throw new Error("invalidArguments");
     }
     await notBrewing();
+    const coffee = b.coffeeId == null ? null : await bagged(await coffeeById(b.coffeeId));
     const saved = await putNext({
+      ...(b.coffeeId !== undefined ? coffeeContext(coffee) : {}),
       ...grinder.context, extras: withTag(grinder.extras, grinder.tag),
       ...(b.grind !== undefined ? { grinderSetting: text(b.grind).trim().slice(0, 60) || null } : {}),
-    });
+    }, undefined, { explicit: b.lockRatio !== undefined });
     await rememberWater(text(grinder.tag.water));
-    return nextOf(optionalObject(saved.context));
+    return { next: nextOf(optionalObject(saved.context)), ...(b.coffeeId !== undefined ? { coffee } : {}) };
   }
   /**
    * A shot's settings for the next one: its profile as it ran, its dose, the weight it stopped at, its grinder, its
@@ -937,10 +911,11 @@ export function createPlugin(host: Host) {
     const grinder = text(was.grinderId) || text(was.grinderModel) ? { grinderModel: text(was.grinderModel) || null, grinderId: text(was.grinderId) || null } : {};
     const saved = await putNext({
       ...(coffee ? coffeeContext(coffee) : {}),
-      extras: withTag(rpm !== undefined ? { rpm } : {}, water !== undefined ? { water } : {}),
+      extras: withTag({ ...(rpm !== undefined ? { rpm } : {}),
+        ...(typeof optionalObject(was.extras).lockRatio === "boolean" ? { lockRatio: optionalObject(was.extras).lockRatio } : {}) }, water !== undefined ? { water } : {}),
       targetDoseWeight: Math.round(dose * 10) / 10, targetYield: Math.round(yieldG * 10) / 10,
       ...(text(was.grinderSetting) ? { grinderSetting: text(was.grinderSetting) } : {}), ...grinder,
-    }, profile);
+    }, { ...profile, target_weight: round1(yieldG) }, { explicit: true });
     return { next: nextOf(optionalObject(saved.context)), coffee: (await current(saved)).coffee };
   }
   /** The coffee for the next shot, and with "last" or "best" that coffee's newest or best rated brew's settings. */
@@ -1086,7 +1061,7 @@ export function createPlugin(host: Host) {
       ...(coffee ? coffeeContext(coffee) : {}), ...grinder.context, extras: withTag(grinder.extras, grinder.tag),
       ...(brew ? { targetDoseWeight: Math.round(dose! * 10) / 10, targetYield: Math.round(yieldG! * 10) / 10 } : {}),
       ...(typeof b.grind === "string" ? { grinderSetting: b.grind.trim().slice(0, 60) || null } : {}),
-    }, profile);
+    }, profile, { explicit: ["dose", "yield", "ratio", "lockRatio"].some((key) => b[key] != null), ...(ratio !== undefined ? { ratio } : {}) });
     await rememberWater(text(grinder.tag.water));
     return answer;
   }
@@ -1193,7 +1168,7 @@ export function createPlugin(host: Host) {
       case "assign-coffee": return serial(() => assignCoffee(b.shotId, b.coffeeId ?? null));
       case "delete-shot": return serial(() => deleteShot(b));
       case "load-shot": return serial(() => loadShot(b.shotId, b.coffeeId));
-      case "next-settings": return serial(async () => ({ next: await nextSettings(b) }));
+      case "next-settings": return serial(() => nextSettings(b));
       case "grinders": return b.includeArchived === true ? { grinders: (await grinderList(true)).map(grinderRow) }
         : { grinders: (await grinderList()).map(grinderView) };
       case "save-grinder": return serial(() => saveGrinder(b));
@@ -1310,7 +1285,7 @@ export function createPlugin(host: Host) {
     if (req.method !== "POST") return { ...response({}, 405), headers: { ...response({}).headers, Allow: "POST" } };
     if (!(headers["content-type"] || "").toLowerCase().startsWith("application/json")) return response({}, 415);
     if (req.endpoint === "ratio") {
-      try { return response(await ratioCall(object(req.body))); } catch (e) { const x = explain(e); return response(x.body, x.status); }
+      try { return response(await serial(() => ratioCall(object(req.body)))); } catch (e) { const x = explain(e); return response(x.body, x.status); }
     }
     // Not authentication: a non-simple header blocks cross-site forms; Origin guards fetch.
     if (headers["x-bean-journal-ui"] !== "1") return response({ error: copy().errors.localOnly, code: "localOnly" }, 403);
@@ -1334,6 +1309,7 @@ export function createPlugin(host: Host) {
       latestMemo.clear();
       // keepBrewTemp compares with the workflow as it was; a clean-up from before the start is undone.
       local("/workflow").then((w) => { seenWorkflow ??= object(w); }).catch(log("workflow"));
+      ratioMemory.follow().catch(log("ratio memory"));
       cleanUpUntil = Date.now() + CLEAN_UP_MS;
       followGearSoon();
       look();
@@ -1348,14 +1324,14 @@ export function createPlugin(host: Host) {
     onEvent(event: { name: string; payload?: unknown }) {
       if (stopped) return;
       try {
-        const p = optionalObject(event.payload);
         if (event.name === "workflowUpdated") {
-          followRatio(p);
+          ratioMemory.follow().catch(log("ratio memory"));
           followGearSoon();
           keepBrewTempSoon();
         } else if (event.name === "shotStored" || event.name === "shotUpdated") {
           latestMemo.clear();
           if (event.name === "shotStored") {
+            const p = optionalObject(event.payload);
             const id = localId(p.id ?? p.shotId);
             lastGrind = null;
             cleanUpUntil = Date.now() + CLEAN_UP_MS;

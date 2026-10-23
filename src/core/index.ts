@@ -5,4 +5,5 @@ export * from "./decaid";
 export * from "./shots";
 export * from "./profiles";
 export * from "./surfaces";
+export * from "./ratio-memory";
 export * from "./mcp";

@@ -29,7 +29,7 @@ const orNull = (schema: Schema): Schema => ({ ...schema, type: [schema.type, "nu
 const shotId = id("The shot's Decaid id (get_shot, list_shots).");
 const coffeeId = id("A coffee's id (list_coffees): one bag of a coffee.");
 const profileId = id("A Decaid profile's id (list_profiles).");
-const lockRatio: Schema = { type: "boolean", description: "Keep ratio in Streamline: a new dose moves the drink with it. Omitted: keep the current setting." };
+const lockRatio: Schema = { type: "boolean", description: "Keeps the drink proportional to dose. Remembered per coffee/profile; explicit settings win." };
 const water: Schema = { type: ["string", "null"], maxLength: 80, description: "The water, as free text (list_equipment has the recent ones); null: none." };
 const filter: Record<string, Schema> = {
   coffee_name: { type: "string", description: "Only shots pulled with this coffee name." },
@@ -204,7 +204,7 @@ export const MCP_TOOLS: Tool[] = [
     call: (a) => ({ action: "measure-tds", body: { sensorId: a.sensor_id, shotId: a.shot_id } }),
     shape: shotAnswer },
   { name: "set_next_shot", level: "shots", kind: "edit", title: "Next shot",
-    description: "Sets the next shots' coffee (coffee_id), grinder, RPM, grind, water and/or lock_ratio (Keep ratio in Streamline); the profile, dose and yield stay. Only the fields given change; null clears one (not lock_ratio). Refused while a shot runs.",
+    description: "Sets the next shots' coffee (coffee_id), grinder, RPM, grind, water and/or lock_ratio (Keep ratio in Streamline). Choosing a coffee restores its remembered ratio mode/target for this profile; unseen pairs keep current settings. An explicit lock_ratio wins and keeps the current yield. Other fields stay; null clears one (not lock_ratio). Refused while a shot runs.",
     properties: {
       coffee_id: { type: ["string", "null"], description: "The coffee the next shots are pulled with (list_coffees); null: none." },
       grinder_id: { type: ["string", "null"], description: "A grinder's id (list_equipment); null: none." },
@@ -215,13 +215,8 @@ export const MCP_TOOLS: Tool[] = [
       lock_ratio: lockRatio,
     },
     call: (a) => {
-      const settings = pick(a, { grinder_id: "grinderId", grinder_model: "grinderModel", rpm: "rpm", grind: "grind", water: "water", lock_ratio: "lockRatio" });
-      const coffee = a.coffee_id !== undefined;
-      return [
-        ...(coffee ? [{ action: "select", body: { coffeeId: a.coffee_id } }] : []),
-        // Nothing to set at all: the page's own refusal.
-        ...(Object.keys(settings).length || !coffee ? [{ action: "next-settings", body: settings }] : []),
-      ];
+      return { action: "next-settings", body: pick(a, { coffee_id: "coffeeId", grinder_id: "grinderId", grinder_model: "grinderModel",
+        rpm: "rpm", grind: "grind", water: "water", lock_ratio: "lockRatio" }) };
     } },
   { name: "add_coffee", level: "shots", kind: "edit", title: "Add a coffee",
     description: "Adds a coffee and its bag to the tablet, as the page's Add coffee form does. When a coffee with this roaster and name is there already, nothing is saved and `duplicates` lists its bags: ask the user, then add_to_coffee_id (a new bag of that coffee) or save_new.",
@@ -286,11 +281,11 @@ export const MCP_TOOLS: Tool[] = [
     description: "Runs the page's full Bluetooth discovery-only scan while the machine is idle, then lists TDS sensors. Never requests a device connection.",
     call: () => ({ action: "search-refractometer" }) },
   { name: "choose_coffee", level: "full", kind: "machine", title: "Choose coffee with settings",
-    description: "Chooses a coffee for the next shot and keeps the current settings, or loads its last/best rated shot's settings, as the page's picker does. Best falls back to last if none is rated. No shot: chooses the coffee and keeps settings. Never starts a shot. set_next_shot at Shots and coffee can choose a coffee without loading.",
+    description: "Chooses a coffee for the next shot. Keep restores this coffee/profile's remembered ratio mode/target, keeping other settings; unseen pairs keep current settings. Last/best loads the shot's explicit settings instead of memory. Best falls back to last if none is rated. No shot: uses Keep. Never starts a shot. set_next_shot at Shots and coffee can choose a coffee without loading.",
     properties: { coffee_id: coffeeId, settings: { type: "string", enum: ["keep", "last", "best"], description: "Omitted: the saved coffee-choice preference." } },
     required: ["coffee_id"], call: (a) => ({ action: "choose-coffee", body: { coffeeId: a.coffee_id, settings: a.settings } }) },
   { name: "load_profile", level: "full", kind: "machine", title: "Load a profile on the machine",
-    description: "Loads a saved profile for the next run; never starts it, and the machine must be idle. Brews take dose, yield/ratio, temperature, grind and optional coffee/grinder/RPM/water, else their saved/current values. Cleaning/calibration profiles need no dose or yield and accept only temperature. The saved profile stays unchanged.",
+    description: "Loads a saved profile for the next run; never starts it, and the machine must be idle. Without explicit dose/yield/ratio/lock_ratio, restores the coffee/profile's remembered ratio mode/target (unseen pairs use saved/current numbers). Explicit settings win and update memory. Other brew settings: temperature, grind and optional coffee/grinder/RPM/water. Cleaning/calibration profiles accept only temperature. The saved profile stays unchanged.",
     properties: {
       profile_id: profileId, dose: num(1, 100, "Grams of coffee."), yield: num(1, 2000, "Grams in the cup to stop at."),
       ratio: num(0.5, 20, "Instead of yield: grams in the cup per gram of coffee (2 = 1:2)."),
@@ -305,7 +300,7 @@ export const MCP_TOOLS: Tool[] = [
     required: ["profile_id"],
     call: (a) => ({ action: "load-profile", body: { profileId: a.profile_id, ...pick(a, { dose: "dose", yield: "yield", ratio: "ratio", lock_ratio: "lockRatio", temperature: "temperature", grind: "grind", coffee_id: "coffeeId", grinder_id: "grinderId", grinder_model: "grinderModel", rpm: "rpm", water: "water" }), confirmed: true } }) },
   { name: "load_shot_settings", level: "full", kind: "machine", title: "Load a shot's settings",
-    description: "Loads a shot's profile as it ran, its dose, the weight it stopped at, its grinder, speed, grind and water for the next shot, optionally with a coffee. Never starts a shot; the machine must be idle.",
+    description: "Loads a shot's profile as it ran, its dose, stop weight, ratio lock when recorded, grinder, speed, grind and water for the next shot, optionally with a coffee. These explicit settings win over and update the coffee/profile's memory. Never starts a shot; the machine must be idle.",
     properties: { shot_id: shotId, coffee_id: { ...coffeeId, description: "Also choose this coffee for the next shot." } }, required: ["shot_id"],
     call: (a) => ({ action: "load-shot", body: { shotId: a.shot_id, coffeeId: a.coffee_id } }) },
 ];

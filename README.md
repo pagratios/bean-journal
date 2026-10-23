@@ -49,6 +49,13 @@ a long-press menu item, a screensaver button and overlay pages, from small to fu
 
 Streamline with DYE2 on clears the coffee, grinder and RPM after each shot; Bean Journal puts the next shot's back.
 
+**Ratio choices follow the coffee and profile.** For example, one coffee can keep Ratio off and an 80 g drink
+regardless of dose, while another keeps Ratio on at 1:2.5 (18 g → 45 g; 20 g → 50 g). Switching coffee or profile
+restores that combination's mode and target, including after a restart. Bags of the same bean share its choices.
+Unseen combinations use the existing settings; no coffee defaults are invented. Choosing "keep the settings" keeps
+everything else, but restores a known ratio choice. Loading a last/best shot, or supplying dose, yield, ratio or lock
+explicitly with `load_profile`, takes precedence and becomes the new remembered choice.
+
 ## Where the data lives
 
 | What | In Decaid |
@@ -58,6 +65,7 @@ Streamline with DYE2 on clears the coffee, grinder and RPM after each shot; Bean
 | A photo | The key-value store, `beanJournal-photos/<bean id>`: a resized JPEG, or an https image address an assistant gave (the page shows it from the web). |
 | Waters | The next shot's in the workflow (`context.extras.beanJournal.water`), each shot's in its annotations; the list (recent ones first, kept in Settings) in `beanJournal/waters`. |
 | Old bags offered | `beanJournal/oldBags` in the key-value store, once answered. |
+| Ratio memory | `beanJournal/ratioMemory` in the key-value store: versioned choices by bean id and profile name/design, storing either an unlocked drink weight or a locked, unrounded ratio. Stop weight, brew temperature and notes do not change a profile's identity; a renamed or redesigned profile starts a new combination. |
 | A shot's rating | Decaid's own fields: `enjoyment` (score ÷ 10), `espressoNotes`, `drinkTds`, `drinkEy`, actual dose and yield; taste and body in `annotations.extras.beanJournal`. Grinder, grind and RPM (`extras.rpm`) on the shot's workflow context. |
 
 Bean Journal never deletes beans, batches or grinders: a grinder put away in Settings is archived in Decaid (shots
@@ -174,7 +182,8 @@ button pulls a 32 s shot (stored as Decaid stores shots), Sleep shows the screen
 its REST client, a shot's curves and profile steps, "Copy for AI" text, profiles (checked steps, edits, a brew
 temperature, AI designs), Streamline's plugin surfaces with Keep ratio, the MCP server (levels, confirmations, rate
 limit) and Streamline's theme tokens. It names no product: a plugin passes its own button, extras key, texts and MCP
-tools. A test keeps it that way, and keeps it importing only itself.
+tools. It also owns persistent coffee/profile ratio memory and dose following. A test keeps it product-neutral and
+keeps it importing only itself.
 
 Another plugin pins a version and bundles the core into its own `.reaplugin`:
 
@@ -191,6 +200,64 @@ and its build reads the theme with
 
 The package is TypeScript source (no build step); a bundler such as esbuild and `"moduleResolution": "bundler"` read
 it as is. Only `src/core/` is in the package.
+
+### Persistent ratio runtime
+
+`createRatioMemory`, `ratioProfileKey`, `RatioMemoryOptions`, `RatioMemoryData`, `RatioChoice` and `RatioChange` are
+exported from `bean-journal/core`. Create one runtime per plugin; the host provides its own persistence and identity
+adapters. For example, with an existing Decaid REST client `local`:
+
+```ts
+import { createRatioMemory, object, optionalObject, text } from "bean-journal/core";
+
+const slot = "/store/myPlugin/ratioMemory";
+const ratios = createRatioMemory({
+  readWorkflow: async () => object(await local("/workflow")),
+  writeWorkflow: async (patch) => {
+    const saved = optionalObject(await local("/workflow", "PUT", patch));
+    return saved.context ? saved : null; // null: the runtime reads it again
+  },
+  readMemory: async () => {
+    try { return await local(slot); }
+    catch (e) {
+      if (e instanceof Error && e.message === "notFound") return null;
+      throw e;
+    }
+  },
+  writeMemory: async (data) => { await local(slot, "POST", data); },
+  coffeeKey: (workflow) => text(optionalObject(workflow.context).beanBatchId) || null,
+});
+```
+
+The example uses batch identity; Bean Journal resolves each batch to its bean id so bags share memory. A consumer
+with another coffee model supplies its stable id instead (the adapter may be asynchronous). Return `null` when
+there is no coffee, not a display name or a prior coffee's fallback. `profileKey` is optional: by default
+`ratioProfileKey` uses the profile's name/design, excluding notes, stop weight and step temperatures (Decaid's record
+hash includes mutable settings, and the workflow does not carry that record's id). Same-named different designs
+stay separate; same-named designs differing only in temperature share memory. A consumer with a stable profile id
+can supply `profileKey` to distinguish these or preserve identity across renames.
+
+| Host path | Runtime call |
+| --- | --- |
+| Startup and every `workflowUpdated` | `await ratios.follow()`; handle/log rejections. It reads the current workflow; do not replay event payloads. Also call it after restoring coffee during shot clean-up and on a missed-event reconciliation. |
+| Ordinary coffee/profile choice | `await ratios.change(patch)`. New combinations keep the patch's normal settings; known ones restore memory. |
+| Shot/recipe load, or explicit dose/yield/lock input | `await ratios.change(patch, { explicit: true })`. Supply the full intended target settings. Explicit loads update memory and never restore an old choice over them. |
+| Typed ratio | `await ratios.change(patch, { ratio: 2.5 })`. The runtime computes the yield from the resulting dose and preserves this exact ratio, rather than deriving it from rounded grams. |
+| Streamline surfaces | Pass `kept: ratios.kept` into `streamlineSurfaces` after following the current workflow. |
+
+`change` also accepts a synchronous `(currentWorkflow) => patch` factory for calculations that need the freshest
+numbers. Route coffee and explicit settings together in one change, rather than selecting the coffee and then
+changing its lock. Keep normal profile defaults in an ordinary profile-load patch; reserve `explicit` for deliberate
+target inputs. Shot loads should carry the shot's lock if recorded, else the current flag. Recipe targets always
+count as explicit. This runtime replaces, rather than supplements, a consumer's old Keep ratio event loop.
+
+The runtime serializes its own loads/events, rereads before applying a delayed identity lookup, ignores write echoes,
+and retries a workflow that moved during planning (then rejects with `workflowChanged` if it stays busy). Yield
+updates send only `profile.target_weight`, not stale temperatures or steps. Workflow adapters must preserve Decaid's
+deep-merge semantics. No compare-and-swap is available in Decaid: hosts should serialize their own load paths and
+avoid separate writers for ratio targets. Storage errors reject; only a genuinely missing key starts empty. A
+malformed/unknown store version is rejected without overwriting it. `readMemory`/`writeMemory` own one versioned
+JSON value; do not let a second runtime write the same slot concurrently. Host adapters should reject after unload.
 
 ## Things learned about Decaid's plugin engine
 

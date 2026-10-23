@@ -32,7 +32,7 @@ function makeShot(id: string, ageSeconds: number, context: ObjectData = {}, anno
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach((f) => f()); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-type World = { beans?: ObjectData[]; batches?: ObjectData[]; phase?: string; slowWorkflow?: number; settingsStatus?: number; sensors?: ObjectData[] };
+type World = { beans?: ObjectData[]; batches?: ObjectData[]; phase?: string; slowWorkflow?: number; settingsStatus?: number; sensors?: ObjectData[]; workflowEvents?: boolean };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 function setup(settings: ObjectData = {}, world: World = {}) {
@@ -62,7 +62,10 @@ function setup(settings: ObjectData = {}, world: World = {}) {
     const b: ObjectData = body && typeof body === "object" && !Array.isArray(body) ? body as ObjectData : {};
     if (route === "/workflow") {
       if (world.slowWorkflow) await new Promise((r) => setTimeout(r, world.slowWorkflow));
-      if (method === "PUT") workflow = merge(workflow, b);
+      if (method === "PUT") {
+        workflow = merge(workflow, b);
+        if (world.workflowEvents) plugin.onEvent({ name: "workflowUpdated", payload: structuredClone(workflow) });
+      }
       return json(workflow);
     }
     if (route === "/machine/state") return json({ state: { state: world.phase ?? "idle" } });
@@ -202,8 +205,19 @@ function setup(settings: ObjectData = {}, world: World = {}) {
   };
   const put = (patch: ObjectData) => fetch("http://localhost:8080/api/v1/workflow", { method: "PUT", body: JSON.stringify(patch) });
   const context = () => object(workflow.context);
-  return { get plugin() { return plugin; }, control, ok, put, calls, shots, store, beans, batches, emitted, workflow: () => workflow, context, settings, profiles };
+  const ratio = async (body: ObjectData) => {
+    const res = await plugin.__httpRequestHandler({ endpoint: "ratio", method: "POST", body, headers });
+    if (res.status !== 200) throw new Error(`ratio: ${res.status} ${res.body}`);
+    return JSON.parse(res.body);
+  };
+  const restart = () => { plugin.onUnload(); plugin = createPlugin(host); plugin.onLoad(settings); };
+  return { get plugin() { return plugin; }, control, ok, put, ratio, restart, calls, shots, store, beans, batches, emitted, workflow: () => workflow, context, settings, profiles };
 }
+
+const ratioWorld = (): World => ({
+  beans: [{ id: "b1", roaster: "R", name: "Long Cup", archived: false }, { id: "b2", roaster: "R", name: "Short Cup", archived: false }],
+  batches: [{ id: "t1", beanId: "b1", archived: false }, { id: "t2", beanId: "b2", archived: false }, { id: "t3", beanId: "b1", archived: false }],
+});
 
 describe("Bean Journal plugin", () => {
   it("lists coffees, saves one, asks about a duplicate and adds a bag", async () => {
@@ -485,6 +499,122 @@ describe("Bean Journal plugin", () => {
     for (const bad of [{ ratio: 0.5 }, { ratio: "2" }, { lock: 2 }, {}]) expect((await ratio(bad)).status).toBe(400);
     expect((await ratio({ ratio: 2 }, { "content-type": "text/plain" })).status).toBe(415);
     expect((await ratio({ ratio: 2 }, { origin: "https://evil.example" })).status).toBe(403);
+  });
+
+  it("remembers 80 g unlocked and 1:2.5 locked across coffee, bag and profile switches and restarts", async () => {
+    const t = setup({}, ratioWorld());
+    await t.ok({ action: "load-profile", profileId: "profile:turbo", coffeeId: "t1", yield: 80, lockRatio: false, confirmed: true });
+    await t.put({ context: { targetDoseWeight: 20 } });
+    t.plugin.onEvent({ name: "workflowUpdated", payload: {} });
+    await t.ok({ action: "select", coffeeId: "t2" });
+    expect(t.context()).toMatchObject({ targetYield: 80, extras: { lockRatio: false } });
+    await t.ratio({ ratio: 2.5 });
+    await t.ratio({ lock: 1 });
+    await t.put({ context: { targetDoseWeight: 18 } });
+    t.plugin.onEvent({ name: "workflowUpdated", payload: { workflow: t.workflow() } });
+    await vi.waitFor(() => expect(t.context().targetYield).toBe(45));
+    await t.put({ context: { targetDoseWeight: 20 } });
+    t.plugin.onEvent({ name: "workflowUpdated", payload: "changed" });
+    await vi.waitFor(() => expect(t.context().targetYield).toBe(50));
+    await t.ok({ action: "select", coffeeId: "t3" });
+    expect(t.context()).toMatchObject({ beanBatchId: "t3", targetYield: 80, extras: { lockRatio: false } });
+    await t.ok({ action: "choose-coffee", coffeeId: "t2", settings: "keep" });
+    expect(t.context()).toMatchObject({ targetYield: 50, extras: { lockRatio: true } });
+
+    await t.put({ profile, context: { targetYield: 36 } });
+    t.plugin.onEvent({ name: "workflowUpdated", payload: t.workflow() });
+    await t.ratio({ lock: 0 });
+    await t.ratio({ ratio: 3 });
+    await t.ok({ action: "load-profile", profileId: "profile:turbo", confirmed: true });
+    expect(t.context()).toMatchObject({ targetYield: 50, extras: { lockRatio: true } });
+    await t.ok({ action: "load-profile", profileId: "profile:turbo", confirmed: true });
+    expect(t.context()).toMatchObject({ targetYield: 50, extras: { lockRatio: true } });
+    expect(object(t.workflow().profile).target_weight).toBe(50);
+    const stored = object(t.store.get("beanJournal/ratioMemory"));
+    expect(stored.version).toBe(1);
+    expect((stored.entries as ObjectData[]).map((row) => row.coffee)).toEqual(["b1", "b2", "b2"]);
+
+    // Decaid still has the selected pair, but the skin reset its mode/numbers before the plugin starts.
+    t.plugin.onUnload();
+    await t.put({ context: { targetDoseWeight: 18, targetYield: 36, extras: { lockRatio: false } } });
+    t.restart();
+    await vi.waitFor(() => expect(t.context()).toMatchObject({ targetYield: 45, extras: { lockRatio: true } }));
+    await t.ok({ action: "select", coffeeId: "t1" });
+    expect(t.context()).toMatchObject({ targetYield: 80, extras: { lockRatio: false } });
+  });
+
+  it("gives explicit profile/shot loads and combined next-shot inputs precedence over memory", async () => {
+    const t = setup({}, ratioWorld());
+    const load = (fields: ObjectData = {}) => t.ok({ action: "load-profile", profileId: "profile:turbo", confirmed: true, ...fields });
+    await load({ coffeeId: "t1", yield: 80, lockRatio: false });
+    await load({ coffeeId: "t2", ratio: 2.5, lockRatio: true });
+    await load({ coffeeId: "t1", dose: 20, yield: 70, lockRatio: true });
+    expect(t.context()).toMatchObject({ targetDoseWeight: 20, targetYield: 70, extras: { lockRatio: true } });
+    await t.ok({ action: "select", coffeeId: "t2" });
+    expect(t.context().targetYield).toBe(50);
+    await load({ coffeeId: "t1", dose: 18 });
+    // Even an explicit dose requests the profile's normal numbers, not its remembered 70 g.
+    expect(t.context().targetYield).toBe(50);
+    await load({ coffeeId: "t1", lockRatio: false });
+    expect(t.context()).toMatchObject({ targetYield: 50, extras: { lockRatio: false } });
+    await t.ok({ action: "next-settings", coffeeId: "t2", lockRatio: false });
+    expect(t.context()).toMatchObject({ beanBatchId: "t2", targetYield: 50, extras: { lockRatio: false } });
+
+    t.shots.set("s1", makeShot("s1", -60, { beanBatchId: "t1", targetYield: 64, extras: { lockRatio: false } }, {},
+      object(t.profiles[0].profile)));
+    await t.ok({ action: "choose-coffee", coffeeId: "t1", settings: "last" });
+    expect(t.context()).toMatchObject({ beanBatchId: "t1", targetDoseWeight: 18, targetYield: 64, extras: { lockRatio: false } });
+    expect(object(t.workflow().profile).target_weight).toBe(64);
+    await t.ok({ action: "select", coffeeId: "t2" });
+    await t.ok({ action: "select", coffeeId: "t1" });
+    expect(t.context().targetYield).toBe(64);
+    t.shots.set("best", makeShot("best", -120, { beanBatchId: "t1", targetYield: 45, extras: { lockRatio: true } },
+      { enjoyment: 9 }, object(t.profiles[0].profile)));
+    await t.ok({ action: "choose-coffee", coffeeId: "t1", settings: "best" });
+    expect(t.context()).toMatchObject({ targetYield: 45, extras: { lockRatio: true } });
+    await t.put({ context: { targetDoseWeight: 20 } });
+    t.plugin.onEvent({ name: "workflowUpdated", payload: {} });
+    await vi.waitFor(() => expect(t.context().targetYield).toBe(50));
+  });
+
+  it("restores exact typed ratios after restart without drift and ignores delayed event payloads and echoes", async () => {
+    const t = setup({}, { ...ratioWorld(), workflowEvents: true });
+    await t.ok({ action: "select", coffeeId: "t1" });
+    await t.put({ context: { targetDoseWeight: 18.1 } });
+    await t.ratio({ ratio: 2.35 });
+    await t.ratio({ lock: 1 });
+    expect(t.context().targetYield).toBe(42.5);
+    const stale = structuredClone(t.workflow());
+    await t.ok({ action: "select", coffeeId: "t2" });
+    await t.ratio({ lock: 0 });
+    await t.ratio({ ratio: 4 });
+    t.plugin.onEvent({ name: "workflowUpdated", payload: stale });
+    await t.ok({ action: "select", coffeeId: "t1" });
+    expect(t.context()).toMatchObject({ targetYield: 42.5, extras: { lockRatio: true } });
+    t.restart();
+    await t.ratio({ lock: 1 });
+    for (const [dose, yieldG] of [[18.2, 42.8], [18.1, 42.5], [20, 47]]) {
+      await t.put({ context: { targetDoseWeight: dose } });
+      await vi.waitFor(() => expect(t.context().targetYield).toBe(yieldG));
+    }
+    const count = t.calls.filter((call) => call.method === "PUT" && call.url.endsWith("/workflow")).length;
+    t.plugin.onEvent({ name: "workflowUpdated", payload: stale });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(t.calls.filter((call) => call.method === "PUT" && call.url.endsWith("/workflow"))).toHaveLength(count);
+    expect(t.store.get("beanJournal/ratioMemory")).toMatchObject({ entries: expect.arrayContaining([
+      expect.objectContaining({ coffee: "b1", choice: { locked: true, ratio: 2.35 } }),
+    ]) });
+  });
+
+  it("restores ratio memory after shot coffee clean-up without saving another coffee's target", async () => {
+    const t = setup({}, ratioWorld());
+    await t.ok({ action: "load-profile", profileId: "profile:turbo", coffeeId: "t1", yield: 80, lockRatio: false, confirmed: true });
+    await t.ok({ action: "load-profile", profileId: "profile:turbo", coffeeId: "t2", ratio: 2.5, lockRatio: true, confirmed: true });
+    await t.put({ context: { beanBatchId: null, coffeeName: null, coffeeRoaster: null, targetYield: 90, extras: { lockRatio: false } } });
+    t.plugin.onEvent({ name: "workflowUpdated", payload: t.workflow() });
+    await vi.waitFor(() => expect(t.context()).toMatchObject({ beanBatchId: "t2", targetYield: 45, extras: { lockRatio: true } }), { timeout: 3000 });
+    await t.ok({ action: "select", coffeeId: "t1" });
+    expect(t.context()).toMatchObject({ targetYield: 80, extras: { lockRatio: false } });
   });
 
   it("answers Streamline's skin, the last answer when Decaid is slow, and pushes the fresh one", async () => {
