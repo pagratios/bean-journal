@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+
+- Remember Keep ratio and its target separately for each coffee and espresso profile, across plugin/tablet restarts.
+  Unlocked keeps a fixed drink weight; locked keeps the exact ratio as the dose changes. New bags of the same bean
+  share the choice. Unseen combinations keep existing settings; explicit profile numbers and loaded shots win.
+- Export the product-neutral persistent ratio runtime and identity helper from `bean-journal/core`, so other plugins
+  can supply their own coffee identities and storage without copying the workflow/event logic.
+
 ## 0.1.2
 
 - Needs Streamline 0.2.15 or newer: the header, screensaver and shot-history pages open full screen over the dashboard

@@ -194,7 +194,7 @@ describe("MCP messages", () => {
   });
 
   it("runs a merged tool as the page actions its arguments name, in order, with their answers merged", async () => {
-    const act = vi.fn(async (action: string) => action === "select" ? { coffee: { id: "c1", beanId: "b1" } } : action === "next-settings" ? { next: { rpm: 900 } }
+    const act = vi.fn(async (action: string) => action === "next-settings" ? { coffee: { id: "c1", beanId: "b1" }, next: { rpm: 900 } }
       : action === "assign-coffee" ? { shot: { id: "s1", coffeeId: "c1", series: { t: [0] } } } : { shot: { id: "s1", coffeeId: "c1", score: 80, series: { t: [0] } } });
     const shots = (over: Partial<McpContext> = {}) => context({ level: "shots", act, ...over });
     const order = () => act.mock.calls.map((c) => c[0]);
@@ -215,14 +215,16 @@ describe("MCP messages", () => {
     // The next shot's coffee and settings.
     act.mockClear();
     const next = await mcpMessage(call("set_next_shot", { coffee_id: "c1", rpm: 900, grinder_model: "Lagom P64", water: null }), shots());
-    expect(order()).toEqual(["select", "next-settings"]);
-    expect(act).toHaveBeenCalledWith("select", { action: "select", coffeeId: "c1" });
-    expect(act).toHaveBeenLastCalledWith("next-settings", { action: "next-settings", rpm: 900, grinderModel: "Lagom P64", water: null });
+    expect(order()).toEqual(["next-settings"]);
+    expect(act).toHaveBeenLastCalledWith("next-settings", { action: "next-settings", coffeeId: "c1", rpm: 900, grinderModel: "Lagom P64", water: null });
     expect(next).toMatchObject({ result: { structuredContent: { coffee: { beanId: "b1" }, next: { rpm: 900 } } } });
     act.mockClear();
     await mcpMessage(call("set_next_shot", { coffee_id: null }), shots());
-    expect(act).toHaveBeenCalledWith("select", { action: "select", coffeeId: null });
-    expect(order()).toEqual(["select"]);
+    expect(act).toHaveBeenCalledWith("next-settings", { action: "next-settings", coffeeId: null });
+    expect(order()).toEqual(["next-settings"]);
+    act.mockClear();
+    await mcpMessage(call("set_next_shot", { coffee_id: "c1", lock_ratio: false }), shots());
+    expect(act).toHaveBeenCalledExactlyOnceWith("next-settings", { action: "next-settings", coffeeId: "c1", lockRatio: false });
     act.mockClear();
     await mcpMessage(call("set_next_shot"), shots());
     expect(act).toHaveBeenCalledWith("next-settings", { action: "next-settings" });

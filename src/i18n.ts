@@ -375,6 +375,7 @@ const en = {
     "missingName": "A coffee needs a roaster and a name.",
     "notAssistantProfile": "Only a profile an AI assistant made can be replaced. Save it as a new profile instead.",
     "profileChanged": "This profile changed since you read it. Read it again before confirming the edit.",
+    "workflowChanged": "The next shot changed while its settings were being read. Try again.",
     "defaultProfile": "Built-in profiles cannot be renamed or annotated in place. Change the design to save a child profile; the built-in stays.",
     "settingsFailed": "Decaid did not save the setting.",
     "sensorNotFound": "No matching TDS sensor with a measure command was found. Search for a refractometer first.",
