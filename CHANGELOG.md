@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- Show the selected unfinished bag first in Coffees and the picker, then bags by their last brewed shot (newest
+  first), with finished bags always last. Equal or missing brew times keep the previous order. Selecting, editing
+  or uploading a shot does not count as brewing; reassignment and deletion refresh the history.
+- Export stable coffee sorting and refreshable, adapter-driven brew history from `bean-journal/core`.
+
 ## 0.1.3
 
 - Remember Keep ratio and its target separately for each coffee and espresso profile, across plugin/tablet restarts.

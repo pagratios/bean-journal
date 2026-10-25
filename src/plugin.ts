@@ -10,6 +10,7 @@ import {
 import { round1, skinSurfaces } from "./skin";
 import { decaid } from "./core/decaid";
 import { createRatioMemory, type RatioChange } from "./core/ratio-memory";
+import { createCoffeeHistory, sortCoffees } from "./core/coffee-order";
 import { copy, page } from "./ui";
 import { MCP_CONFIRMS, MCP_LEVELS, MCP_TOKEN, mcpMessage, rateLimit, type McpConfirm, type McpLevel } from "./mcp";
 
@@ -109,6 +110,7 @@ export function createPlugin(host: Host) {
       return answer;
     } finally {
       if (writesShelf) forgetShelf();
+      if (method !== "GET" && /^\/shots(?:[/?]|$)/.test(path)) coffeeHistory.invalidate();
     }
   }
   const enc = encodeURIComponent;
@@ -731,6 +733,20 @@ export function createPlugin(host: Host) {
     const list = items(object(await local(`/shots?limit=${limit + 1}&offset=0&order=desc${shotFilter(filter)}`)).items);
     return list.filter((s) => text(s.id) !== skip).slice(0, limit).map(shotLine);
   }
+  const coffeeHistory = createCoffeeHistory<ObjectData>({
+    readShots: async (offset, limit) => items(object(await local(`/shots?limit=${limit}&offset=${offset}&order=desc`)).items),
+    coffeeId: (shot) => text(optionalObject(optionalObject(shot.workflow).context).beanBatchId) || null,
+    brewedAt: (shot) => isBrew(shotKind(optionalObject(optionalObject(shot.workflow).profile))) ? Date.parse(text(shot.timestamp)) : null,
+  });
+  async function orderedCoffees() {
+    const [s, lastBrewed] = await Promise.all([readShelf(), coffeeHistory.lastBrewed()]);
+    // Read selection after the history scan: it may have changed while the tablet read older pages.
+    const workflow = object(await local("/workflow"));
+    return sortCoffees(s.coffees, {
+      coffeeId: (coffee) => coffee.id, isFinished: (coffee) => coffee.finished,
+      selectedId: text(optionalObject(workflow.context).beanBatchId) || null, lastBrewed,
+    });
+  }
   /** A coffee's newest brew and its best rated one (the newest of equals). */
   function lastAndBest(shots: ShotLine[]) {
     const brews = shots.filter((s) => isBrew(s.kind));
@@ -1137,9 +1153,9 @@ export function createPlugin(host: Host) {
     switch (b.action) {
       case "status": return status();
       case "coffees": {
-        const s = await readShelf();
+        const coffees = await orderedCoffees();
         const search = text(b.search).slice(0, 120);
-        return { coffees: s.coffees.filter((c) => (b.includeFinished === true || !c.finished) && matchesSearch(c, search)) };
+        return { coffees: coffees.filter((c) => (b.includeFinished === true || !c.finished) && matchesSearch(c, search)) };
       }
       case "coffee": return coffeeDetail(b.id);
       case "save-coffee": return serial(() => saveCoffee(b));
@@ -1307,6 +1323,7 @@ export function createPlugin(host: Host) {
       config = settings ?? {};
       stopped = false;
       latestMemo.clear();
+      coffeeHistory.invalidate();
       // keepBrewTemp compares with the workflow as it was; a clean-up from before the start is undone.
       local("/workflow").then((w) => { seenWorkflow ??= object(w); }).catch(log("workflow"));
       ratioMemory.follow().catch(log("ratio memory"));
@@ -1316,6 +1333,7 @@ export function createPlugin(host: Host) {
     },
     onUnload() {
       stopped = true;
+      coffeeHistory.invalidate();
       clearTimeout(timer);
       clearTimeout(sticky);
       clearTimeout(gearTimer);
@@ -1330,6 +1348,7 @@ export function createPlugin(host: Host) {
           keepBrewTempSoon();
         } else if (event.name === "shotStored" || event.name === "shotUpdated") {
           latestMemo.clear();
+          coffeeHistory.invalidate();
           if (event.name === "shotStored") {
             const p = optionalObject(event.payload);
             const id = localId(p.id ?? p.shotId);

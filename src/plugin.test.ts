@@ -220,6 +220,91 @@ const ratioWorld = (): World => ({
 });
 
 describe("Bean Journal plugin", () => {
+  it("orders by selection then actual brew time, always finishes last, and keeps bags of the same bean distinct", async () => {
+    vi.useFakeTimers();
+    const t = setup({}, {
+      beans: [{ id: "b1", roaster: "R", name: "Same name" }, { id: "b2", roaster: "R", name: "Same name" }],
+      batches: ["unseen", "tie", "new", "old", "done", "done-old"].map((id, i) => ({
+        id, beanId: i === 1 ? "b2" : "b1", archived: id.startsWith("done"), roastDate: `2026-10-${20 - i}T00:00:00`,
+      })),
+    });
+    const listing = async (more: ObjectData = {}) => (await t.ok({ action: "coffees", includeFinished: true, ...more })).coffees.map((c: ObjectData) => c.id);
+    for (const [id, seconds, batch] of [["older", -300, "old"], ["equal", -300, "tie"], ["recent", -60, "new"], ["finished", -10, "done"]] as const) {
+      t.shots.set(id, makeShot(id, seconds, { beanBatchId: batch, coffeeName: "Same name", coffeeRoaster: "R" }));
+    }
+    t.shots.set("clean", makeShot("clean", 10, { beanBatchId: "unseen" }, {}, { beverage_type: "cleaning" }));
+    t.shots.set("calibrate", makeShot("calibrate", 20, { beanBatchId: "old" }, {}, { beverage_type: "calibration" }));
+    t.shots.set("named", makeShot("named", 30, { coffeeName: "Same name", coffeeRoaster: "R" }));
+    t.shots.set("unknown", makeShot("unknown", 40, { beanBatchId: "unknown", coffeeName: "Same name" }));
+    t.shots.set("invalid-time", { ...makeShot("invalid-time", 50, { beanBatchId: "unseen" }), timestamp: "invalid" });
+    expect(await listing()).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
+    await t.ok({ action: "select", coffeeId: "old" });
+    expect(await listing()).toEqual(["old", "new", "tie", "unseen", "done", "done-old"]);
+    await t.ok({ action: "select", coffeeId: "unseen" });
+    expect(await listing()).toEqual(["unseen", "new", "tie", "old", "done", "done-old"]);
+    await t.ok({ action: "select", coffeeId: null });
+    expect(await listing()).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
+    await t.put({ context: { beanBatchId: "done-old" } });
+    expect(await listing()).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
+    expect(await listing({ includeFinished: false })).toEqual(["new", "tie", "old", "unseen"]);
+    expect(await listing({ search: "same" })).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
+    expect(t.calls.filter((c) => c.url.includes("/shots?"))).toHaveLength(1);
+  });
+
+  it("refreshes new brews, edits, reassignments, confirmed deletions and missed-event changes", async () => {
+    vi.useFakeTimers();
+    const t = setup({}, ratioWorld());
+    const listing = async () => (await t.ok({ action: "coffees" })).coffees.map((c: ObjectData) => c.id);
+    t.shots.set("a", makeShot("a", -300, { beanBatchId: "t1" }));
+    t.shots.set("b", makeShot("b", -200, { beanBatchId: "t2" }));
+    expect(await listing()).toEqual(["t2", "t1", "t3"]);
+    t.shots.set("c", makeShot("c", -100, { beanBatchId: "t3" }));
+    t.plugin.onEvent({ name: "shotStored", payload: { id: "c" } });
+    expect(await listing()).toEqual(["t3", "t2", "t1"]);
+    await t.ok({ action: "rate-shot", shotId: "a", score: 95 });
+    expect(await listing()).toEqual(["t3", "t2", "t1"]);
+    const edited = t.shots.get("a")!;
+    t.shots.set("a", merge(edited, { annotations: { extras: { visualizerId: "uploaded-now" } }, updatedAt: new Date().toISOString() }));
+    t.plugin.onEvent({ name: "shotUpdated", payload: { id: "a" } });
+    expect(await listing()).toEqual(["t3", "t2", "t1"]);
+    await t.ok({ action: "assign-coffee", shotId: "c", coffeeId: "t1" });
+    expect(await listing()).toEqual(["t1", "t2", "t3"]);
+    expect((await t.control({ action: "delete-shot", shotId: "c" })).data.code).toBe("confirmation");
+    expect(await listing()).toEqual(["t1", "t2", "t3"]);
+    await t.ok({ action: "delete-shot", shotId: "c", confirmed: true });
+    expect(await listing()).toEqual(["t2", "t1", "t3"]);
+    t.shots.delete("b");
+    vi.setSystemTime(Date.now() + 15000);
+    expect(await listing()).toEqual(["t1", "t2", "t3"]);
+    t.shots.set("a", merge(t.shots.get("a")!, { workflow: { context: { beanBatchId: "t3" } } }));
+    vi.setSystemTime(Date.now() + 15000);
+    expect(await listing()).toEqual(["t3", "t1", "t2"]);
+    await t.ok({ action: "assign-coffee", shotId: "a", coffeeId: null });
+    expect(await listing()).toEqual(["t1", "t2", "t3"]);
+    t.restart();
+    expect(await listing()).toEqual(["t1", "t2", "t3"]);
+  });
+
+  it("reads beyond the first shot page for brew ordering", async () => {
+    const t = setup({}, ratioWorld());
+    for (let i = 0; i < 105; i++) t.shots.set(`s${i}`, makeShot(`s${i}`, -i, { beanBatchId: "t1" }));
+    t.shots.set("old-bag", makeShot("old-bag", -1000, { beanBatchId: "t3" }));
+    expect((await t.ok({ action: "coffees" })).coffees.map((c: ObjectData) => c.id)).toEqual(["t1", "t3", "t2"]);
+    expect(t.calls.some((c) => c.url.endsWith("/shots?limit=100&offset=100&order=desc"))).toBe(true);
+  });
+
+  it("surfaces shot history read errors instead of returning a success-shaped unsorted shelf", async () => {
+    const t = setup({}, ratioWorld());
+    const read = fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) =>
+      url.includes("/shots?") ? json({ error: "Busy" }, 503) : read(url, init)));
+    const failed = await t.control({ action: "coffees" });
+    expect(failed.status).not.toBe(200);
+    expect(failed.data.code).toBe("requestFailed");
+    vi.stubGlobal("fetch", read);
+    expect((await t.ok({ action: "coffees" })).coffees.map((c: ObjectData) => c.id)).toEqual(["t1", "t2", "t3"]);
+  });
+
   it("lists coffees, saves one, asks about a duplicate and adds a bag", async () => {
     const t = setup({}, {
       beans: [{ id: "b1", roaster: "Café Señor", name: "Kiambu", decaf: false, archived: false, createdAt: "2026-01-01T00:00:00", extras: { beanbox: { bag_id: "x" } } },

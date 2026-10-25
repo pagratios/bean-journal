@@ -109,6 +109,72 @@ describe("the page", () => {
   });
 });
 
+describe("coffee list refreshes", () => {
+  const section = (start: string, end: string) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+  const code = transformSync(`function coffeeClient() {
+    let coffees = [], coffeesLoaded = false, status = {}, showFinished = false;
+    const list = (v) => v, asCoffee = (v) => v, str = (v) => typeof v === "string" ? v : "";
+    const $ = (id) => elements[id], say = report, t = { failed: "Failed" };
+    const renderNext = () => {}, renderFilters = () => {}, offerOldBags = () => {};
+    const renderCoffees = () => { elements.grid.scrollTop = 0; rendered.grid = withFinishedLast(coffees).map((c) => c.id); };
+    const renderPicker = () => { elements["picker-list"].scrollTop = 0; rendered.picker = withFinishedLast(coffees).map((c) => c.id); };
+    ${section("  const nextCoffee =", "  function renderNext()")}
+    ${section("  const withFinishedLast =", "  // What choosing did")}
+    ${section("  const nextFirst =", "  // What's left")}
+    ${section("  let coffeeRead =", "  // ── Old bags:")}
+    return { refreshStatus, refreshCoffeeLists, ensureCoffees, ids: () => coffees.map((c) => c.id) };
+  }`, { loader: "ts" }).code;
+  function setupCoffeeClient() {
+    const elements = { grid: { scrollTop: 120 }, "picker-list": { scrollTop: 240 }, picker: { open: true } };
+    const rendered = { grid: [] as string[], picker: [] as string[] };
+    const report = vi.fn(), api = vi.fn();
+    const client = runInNewContext(`${code}; coffeeClient()`, { elements, rendered, report, api, Error }) as {
+      refreshStatus: () => Promise<void>; refreshCoffeeLists: () => Promise<void>; ensureCoffees: (force?: boolean) => Promise<void>;
+      ids: () => string[];
+    };
+    return { client, api, elements, rendered, report };
+  }
+  const coffees = ["new", "old", "done"].map((id) => ({ id, finished: id === "done" }));
+
+  it("refreshes selection in both views without losing their scroll positions", async () => {
+    const t = setupCoffeeClient();
+    t.api.mockResolvedValueOnce({ coffees }).mockResolvedValueOnce({ coffee: { id: "old" } })
+      .mockResolvedValueOnce({ coffees: [coffees[1], coffees[0], coffees[2]] });
+    await t.client.ensureCoffees();
+    await t.client.refreshStatus();
+    expect(t.rendered).toEqual({ grid: ["old", "new", "done"], picker: ["old", "new", "done"] });
+    expect(t.elements.grid.scrollTop).toBe(120);
+    expect(t.elements["picker-list"].scrollTop).toBe(240);
+    t.api.mockResolvedValueOnce({ coffee: { id: "done" } }).mockResolvedValueOnce({ coffees });
+    await t.client.refreshStatus();
+    expect(t.rendered).toEqual({ grid: ["new", "old", "done"], picker: ["new", "old", "done"] });
+    expect(t.report).not.toHaveBeenCalled();
+  });
+  it("does not let a slow previous response overwrite a newer ordering", async () => {
+    const t = setupCoffeeClient();
+    let finish!: (value: unknown) => void;
+    t.api.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; })).mockResolvedValueOnce({ coffees });
+    const stale = t.client.ensureCoffees(true);
+    await t.client.refreshCoffeeLists();
+    finish({ coffees: [...coffees].reverse() });
+    await stale;
+    expect(t.client.ids()).toEqual(["new", "old", "done"]);
+    expect(t.rendered.grid).toEqual(["new", "old", "done"]);
+    expect(t.rendered.picker).toEqual(t.rendered.grid);
+  });
+  it("surfaces refresh errors and keeps the last rendered lists", async () => {
+    const t = setupCoffeeClient();
+    t.api.mockResolvedValueOnce({ coffees }).mockRejectedValueOnce(new Error("Offline"));
+    await t.client.refreshCoffeeLists();
+    await t.client.refreshCoffeeLists();
+    expect(t.report).toHaveBeenCalledWith("Offline", "error");
+    expect(t.rendered.grid).toEqual(["new", "old", "done"]);
+    expect(source).toContain('if (view === "coffees") void loadCoffees(true)');
+    expect(source).toContain('await ensureCoffees(true);\n    // Each time a fresh list');
+    expect(source).toContain('void refreshStatus(true).then(refreshCoffeeLists)');
+  });
+});
+
 // Run the serialized page's navigation and R2 helpers without starting the other tabs.
 const prefix = source.slice(source.indexOf("function client("), source.indexOf("  // ── Tabs ──"));
 const click = source.slice(source.indexOf("    r2Button.onclick ="), source.indexOf('    // Beside the "TDS %" caption'));

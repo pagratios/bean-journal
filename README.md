@@ -31,8 +31,10 @@ a long-press menu item, a screensaver button and overlay pages, from small to fu
   coffee it was pulled with, a DiFluid R2 measurement through Decaid, **Load for next shot**, **Copy for AI**,
   **Open in Visualizer** and Delete (it asks). Edits are saved on Decaid's shot, and saved before the page closes
   when an espresso starts.
-- **Coffees**: your bags, with photo, roaster, origin, process, grams left, roast date and frozen; search and filters;
-  finished bags last and greyed, behind the **Finished** switch. **Add coffee**. With 10 or more old bags in use (no
+- **Coffees**: your bags, with photo, roaster, origin, process, grams left, roast date and frozen; search and filters.
+  Here and in the picker, the selected unfinished bag comes first, then the last brewed shot (newest first);
+  finished bags stay last and greyed, behind the **Finished** switch, even when selected. Equal or missing brew times
+  keep the previous order (newest roast, then newest added). **Add coffee**. With 10 or more old bags in use (no
   shot and no roast, purchase, opening or freezer date in the last 3 months, not frozen; an import's, say), the list
   offers once to finish them: you untick any to keep (bags with grams left start unticked), or Keep all.
 - **A coffee's page**: every detail, its bags, its shots (last and best marked, load a shot's settings), Use for next
@@ -200,6 +202,48 @@ and its build reads the theme with
 
 The package is TypeScript source (no build step); a bundler such as esbuild and `"moduleResolution": "bundler"` read
 it as is. Only `src/core/` is in the package.
+
+### Coffee ordering and brew history
+
+`sortCoffees`, `createCoffeeHistory`, `CoffeeSortOptions<Coffee>` and `CoffeeHistoryOptions<Shot>` are exported from
+`bean-journal/core`. Keep one history runtime per plugin, and pass a stable, unsorted-again source array to the sorter:
+
+```ts
+import { createCoffeeHistory, sortCoffees } from "bean-journal/core";
+
+const history = createCoffeeHistory({
+  readShots: (offset, limit) => readShotPage(offset, limit),
+  coffeeId: (shot) => bagIdForShot(shot),
+  brewedAt: (shot) => isActualBrew(shot) ? Date.parse(shot.timestamp) : null,
+});
+
+const lastBrewed = await history.lastBrewed();
+const ordered = sortCoffees(bags, {
+  coffeeId: (bag) => bag.id,
+  isFinished: (bag) => bag.finished,
+  selectedId: selectedBagId,
+  lastBrewed,
+});
+```
+
+`sortCoffees` returns a new array: unfinished before finished, the selected unfinished bag first, then newest brew
+within each group. Ties and bags without history preserve the input's relative order. Finished selection never
+promotes a bag. Use stable bag ids, not names or bean ids shared by multiple bags. Bean Journal uses only the shot's
+`workflow.context.beanBatchId`; an unlinked/name-only shot does not guess which bag was used.
+
+The host supplies a complete, consistently ordered paginated listing; `readShots(offset, limit)` must honor both
+arguments and return fewer than `limit` (100) only at the end. Summaries are sufficient if they carry the original
+brew timestamp and enough capture-time identity to assign a bag confidently. `coffeeId` may be asynchronous; return
+`null` for an uncertain match. `brewedAt` returns milliseconds, or `null` for cleaning/calibration/non-brews. Non-finite
+times are excluded. Never use selection, modification or upload times as a brew time.
+
+Call `history.invalidate()` on shot stored/updated events and after local shot writes/deletions, including coffee
+reassignment. Refresh the page's coffee response on opening either view, on selection changes and periodically while
+visible. History expires after 15 seconds (`maxAgeMs` overrides it), so a deletion with no event is still noticed.
+Every refresh rebuilds the map, removing deleted/reassigned uses rather than only adding newer timestamps. Concurrent
+reads share a scan; invalidation during a scan discards and retries it, rejecting with `coffeeHistoryChanged` after
+three busy attempts. Read/adapter errors reject without caching partial history. `lastBrewed()` returns a defensive
+map copy. The host must surface errors and reject reads after unload; invalidate on unload/reload as well.
 
 ### Persistent ratio runtime
 

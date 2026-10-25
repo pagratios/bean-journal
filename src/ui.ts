@@ -577,7 +577,7 @@ function client(t: Copy) {
     updateFooter();
     syncAddress();
     if (view === "shot") { void loadShot(); void searchR2IfMissing(); }
-    if (view === "coffees") void loadCoffees();
+    if (view === "coffees") void loadCoffees(true);
     if (view === "settings") void loadSettings();
     if (view === "ai") void loadMcp();
   }
@@ -595,8 +595,10 @@ function client(t: Copy) {
   const nextCoffee = () => status.coffee && typeof status.coffee === "object" ? asCoffee(status.coffee) : null;
   const nextId = () => nextCoffee()?.id ?? "";
   async function refreshStatus(quiet = false) {
+    const previous = nextId();
     try { status = await api("status"); } catch (e) { if (!quiet) say(e instanceof Error ? e.message : t.failed, "error"); }
     renderNext();
+    if (coffeesLoaded && previous !== nextId()) await refreshCoffeeLists();
   }
   function renderNext() {
     const box = $("next-coffee");
@@ -929,6 +931,7 @@ function client(t: Copy) {
       ], "no");
       if (answer !== "yes") return;
       await api("delete-shot", { shotId: s.id, confirmed: true });
+      coffeesLoaded = false;
       unsaved = false;
       saveShot = null;
       shot = null;
@@ -1263,7 +1266,7 @@ function client(t: Copy) {
   // ── Coffee picker (dialog) ──
   async function openPicker(target: "next" | "shot") {
     pickFor = target;
-    await ensureCoffees();
+    await ensureCoffees(true);
     // Each time a fresh list: no search or filter left over from the last choice.
     ($("picker-search") as HTMLInputElement).value = "";
     for (const key of Object.keys(pickerFilter)) delete pickerFilter[key];
@@ -1312,7 +1315,7 @@ function client(t: Copy) {
     if (!shown.length) { box.append(el("p", "empty", coffees.length ? t.noMatches : t.emptyShelf)); return; }
     for (const c of withFinishedLast(shown)) box.append(cardFor(c, true));
   }
-  // Coffees with coffee left first (the next shot's first of all); finished ones (when asked for) after them, greyed.
+  // The server orders by brew history. Promote only the current unfinished bag, keeping that history order.
   const withFinishedLast = (all: Coffee[]) => [...nextFirst(all.filter((c) => !c.finished)), ...all.filter((c) => c.finished)];
   // What choosing did, in words: the settings it kept, or the shot whose settings came with it.
   function chosenSaid(c: Coffee, how: string, value: Data) {
@@ -1336,7 +1339,7 @@ function client(t: Copy) {
     if (pickFor === "shot" && shot) {
       const s = shot;
       shot = shotFrom(await api("assign-coffee", { shotId: s.id, coffeeId: c.id }), s);
-      if (!c.batchId) coffeesLoaded = false;
+      coffeesLoaded = false;
       ($("picker") as HTMLDialogElement).close();
       renderShot();
       say(t.coffeeAssigned);
@@ -1385,13 +1388,26 @@ function client(t: Copy) {
       bestBefore: opt(o.bestBefore), bagNotes: str(o.bagNotes), finished: o.finished === true, createdAt: str(o.createdAt),
     };
   }
+  let coffeeRead = 0;
   async function ensureCoffees(force = false) {
     if (coffeesLoaded && !force) return;
+    const reading = ++coffeeRead;
     const value = await api("coffees", { includeFinished: showFinished });
+    if (reading !== coffeeRead) return;
     coffees = list(value.coffees).map(asCoffee).filter((c) => c.id);
     coffeesLoaded = true;
     renderFilters();
     void offerOldBags();
+  }
+  async function refreshCoffeeLists() {
+    try {
+      await ensureCoffees(true);
+      const gridTop = $("grid").scrollTop, pickerTop = $("picker-list").scrollTop;
+      renderCoffees();
+      if (($("picker") as HTMLDialogElement).open) renderPicker();
+      $("grid").scrollTop = gridTop;
+      $("picker-list").scrollTop = pickerTop;
+    } catch (e) { say(e instanceof Error ? e.message : t.failed, "error"); }
   }
   // ── Old bags: a long imported list is offered for finishing once, the bags with grams left unticked. ──
   let oldBagsOffered = false;
@@ -2461,6 +2477,7 @@ function client(t: Copy) {
     if (document.hidden) return;
     grindersAt = watersAt = 0;
     void refreshStatus(true);
+    if (!$("view-coffees").hidden || ($("picker") as HTMLDialogElement).open) void refreshCoffeeLists();
     void searchR2IfMissing();
   });
   // A shot saved after this one was shown (the page opened right as it ended): shown at once when nothing is being
@@ -2486,6 +2503,11 @@ function client(t: Copy) {
   setInterval(() => { if (!document.hidden && !$("view-shot").hidden && !r2Measuring) void searchR2IfMissing(); }, 10000);
   // The next shot changes in the skin too (a coffee, the grinder): the bar follows within a minute.
   setInterval(() => { if (!document.hidden && !busy) void refreshStatus(true); }, 60000);
+  // Other apps can reassign/delete shots without a usable event. Refresh both views while they are visible.
+  setInterval(() => {
+    if (document.hidden || busy || ($("view-coffees").hidden && !($("picker") as HTMLDialogElement).open)) return;
+    void refreshStatus(true).then(refreshCoffeeLists);
+  }, 15000);
   // Alone in the skin's overlay the gear card starts at once, and the page behind it (never shown) isn't loaded.
   if (document.documentElement.classList.contains("gear-only")) { gearOnly = true; void run(openNextGear); }
   else void refreshStatus().then(() => {
