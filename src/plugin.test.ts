@@ -368,6 +368,42 @@ describe("Bean Journal plugin", () => {
     expect(t.beans[0].extras).toEqual({ other: 1 });
   });
 
+  it("freezes and thaws whole bags through the existing save action without losing resting days", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 20, 12));
+    const t = setup({}, {
+      beans: [{ id: "b1", roaster: "R", name: "N" }],
+      batches: [{ id: "t1", beanId: "b1", roastDate: "2026-10-01T00:00:00", frozen: false,
+        freezeDate: "2026-10-03T00:00:00", unfreezeDate: "2026-10-08T00:00:00",
+        extras: { anotherApp: { keep: true }, beanJournal: { keep: "mine" } } }],
+    });
+    const save = async (fields: ObjectData) => (await t.ok({ action: "save-coffee", id: "t1", fields })).coffee;
+    expect((await t.ok({ action: "coffee", id: "t1" })).coffee.restingDays).toBe(14);
+    expect(await save({ frozen: true })).toMatchObject({ frozen: true, freezeDate: "2026-10-20", thawDate: null, pastFrozenDays: 5, restingDays: 14 });
+    expect(t.batches[0].extras).toEqual({ anotherApp: { keep: true }, beanJournal: { keep: "mine", pastFrozenDays: 5 } });
+    vi.setSystemTime(new Date(2026, 9, 23, 12));
+    expect(await save({ frozen: false })).toMatchObject({ frozen: false, thawDate: "2026-10-23", restingDays: 14 });
+    vi.setSystemTime(new Date(2026, 9, 25, 12));
+    expect(await save({ frozen: true })).toMatchObject({ frozen: true, freezeDate: "2026-10-25", thawDate: null, pastFrozenDays: 8, restingDays: 16 });
+    vi.setSystemTime(new Date(2026, 9, 27, 12));
+    expect((await t.ok({ action: "coffees" })).coffees[0]).toMatchObject({ frozen: true, pastFrozenDays: 8, restingDays: 16 });
+    expect(await save({ frozen: false })).toMatchObject({ thawDate: "2026-10-27", restingDays: 16 });
+    expect(await save({ freezeDate: null, thawDate: null })).toMatchObject({ pastFrozenDays: 8, restingDays: 18 });
+    expect(await save({ roastDate: null })).toMatchObject({ restingDays: null });
+    expect(t.calls.some((c) => c.method === "DELETE")).toBe(false);
+  });
+
+  it("surfaces incomplete freezer history before refreezing, without writing anything", async () => {
+    const t = setup({}, {
+      beans: [{ id: "b1", roaster: "R", name: "N" }],
+      batches: [{ id: "t1", beanId: "b1", frozen: false, freezeDate: "2026-10-03T00:00:00" }],
+    });
+    const failed = await t.control({ action: "save-coffee", id: "t1", fields: { frozen: true } });
+    expect(failed.status).toBe(400);
+    expect(failed.data).toEqual({ code: "invalidFreezerDates", error: texts.errors.invalidFreezerDates });
+    expect(t.calls.some((c) => c.method !== "GET")).toBe(false);
+  });
+
   it("saves Decaid's other coffee fields and an assistant's photo with the coffee, checking the photo before writing", async () => {
     const t = setup({}, {
       beans: [{ id: "b1", roaster: "R", name: "N", decaf: false, archived: false, createdAt: "2026-01-01T00:00:00", extras: { other: 1 } }],

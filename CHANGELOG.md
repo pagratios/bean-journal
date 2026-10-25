@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.5
+
+- Show compact resting-age labels, such as 5d, on coffee cards, in the picker and in bag details. Count calendar
+  days since roasting outside the freezer; hide unknown or inconsistent ages.
+- Keep earlier freezer time across repeated whole-bag Freeze / Thaw actions. Start a fresh interval when refreezing,
+  preserve other apps' batch extras, and let the latest dates be edited or cleared without changing earlier time.
+- Export product-neutral resting-age and freezer-interval runtime helpers from `bean-journal/core`.
+
 ## 0.1.4
 
 - Show the selected unfinished bag first in Coffees and the picker, then bags by their last brewed shot (newest

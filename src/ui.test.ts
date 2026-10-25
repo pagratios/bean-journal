@@ -175,6 +175,39 @@ describe("coffee list refreshes", () => {
   });
 });
 
+describe("coffee resting-age labels", () => {
+  const start = source.indexOf("  function bagDates("), end = source.indexOf("  function card(", start);
+  const code = transformSync(`function labels(t) {
+    const shortDate = (value) => value;
+    const el = (tag, className, text) => ({
+      tag, className, text, children: [], attributes: {},
+      append(child) { this.children.push(child); },
+      setAttribute(key, value) { this.attributes[key] = value; },
+    });
+    ${source.slice(start, end)}
+    return { bagDates, restingAge };
+  }`, { loader: "ts" }).code;
+  type Node = { text: string; title: string; attributes: Record<string, string>; children: Node[] };
+  const labels = runInNewContext(`${code}; labels(texts)`, { texts }) as {
+    bagDates: (coffee: Record<string, unknown>) => Node;
+    restingAge: (coffee: Record<string, unknown>) => Node | null;
+  };
+
+  it("shows small 5d and 0d labels with an accessible explanation, omitting unknown ages", () => {
+    expect(labels.restingAge({ restingDays: null })).toBeNull();
+    for (const days of [0, 5]) {
+      const label = labels.restingAge({ restingDays: days })!;
+      expect(label.text).toBe(`${days}d`);
+      expect(label.title).toContain("excluding freezer time");
+      expect(label.attributes["aria-label"]).toBe(label.title);
+    }
+    expect(labels.bagDates({ restingDays: 5, frozen: true, freezeDate: "2026-10-06" }).children.map((n) => n.text))
+      .toEqual(["5d", "❄ 2026-10-06"]);
+    expect(source).toContain('[t.resting, restingAge(c) ?? ""]');
+    expect(source).toContain("const age = restingAge(b)");
+  });
+});
+
 // Run the serialized page's navigation and R2 helpers without starting the other tabs.
 const prefix = source.slice(source.indexOf("function client("), source.indexOf("  // ── Tabs ──"));
 const click = source.slice(source.indexOf("    r2Button.onclick ="), source.indexOf('    // Beside the "TDS %" caption'));
