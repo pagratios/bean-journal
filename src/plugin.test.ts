@@ -433,7 +433,8 @@ describe("Bean Journal plugin", () => {
   });
 
   it("offers old bags for finishing once, archiving only those the user chose", async () => {
-    const day = (ago: number) => new Date(Date.now() - ago * 86400000).toISOString();
+    const now = Date.now();
+    const day = (ago: number) => new Date(now - ago * 86400000).toISOString();
     const beans = Array.from({ length: 14 }, (_, i) => ({ id: `b${i}`, roaster: "R", name: `Coffee ${i}`, decaf: false, archived: false, createdAt: day(1) }));
     const batches = beans.map((b, i) => ({ id: `t${i}`, beanId: b.id, frozen: false, archived: false, createdAt: day(1), ...(i === 0 ? { roastDate: day(10).slice(0, 19) } : {}) }));
     const t = setup({}, { beans, batches });
