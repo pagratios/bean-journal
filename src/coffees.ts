@@ -1,5 +1,6 @@
 // Coffees as the page and the assistants see them: one card per bag (a Decaid bean batch), with its bean's details.
 import { httpsUrl, localId, normTitle, number, optionalObject, text, type ObjectData } from "./protocol";
+import { coffeeFreezerDays, coffeeRestingDays } from "./core/coffee-age";
 
 export type Coffee = {
   /** The batch id; "bean:<beanId>" for a bean with no batch at all. */
@@ -19,6 +20,7 @@ export type Coffee = {
   price: number | null; currency: string; buyDate: string | null;
   weight: number | null; remaining: number | null;
   frozen: boolean; freezeDate: string | null; thawDate: string | null;
+  pastFrozenDays: number | null; restingDays: number | null;
   openDate: string | null; bestBefore: string | null;
   bagNotes: string;
   finished: boolean;
@@ -44,7 +46,9 @@ export function coffeeRef(value: unknown): { beanId: string } | { batchId: strin
 /** "YYYY-MM-DD" from Decaid's "YYYY-MM-DDT00:00:00" (or any ISO stamp), else null. */
 export function day(value: unknown): string | null {
   const m = /^(\d{4}-\d{2}-\d{2})(?:$|T)/.exec(text(value));
-  return m ? m[1] : null;
+  if (!m || !Number.isFinite(Date.parse(text(value)))) return null;
+  const date = new Date(`${m[1]}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === m[1] ? m[1] : null;
 }
 /** A day as Decaid stores it; refused unless it is a real date. */
 export function decaidDay(value: unknown): string {
@@ -63,9 +67,20 @@ export function today(now = new Date()) {
 
 const strings = (value: unknown) => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && !!v.trim()).map((v) => v.trim()) : [];
 const tag = (record: ObjectData) => optionalObject(optionalObject(record.extras).beanJournal);
+const pastFrozenDays = (record: ObjectData) => {
+  const own = tag(record);
+  return "pastFrozenDays" in own ? number(own.pastFrozenDays) ?? null : 0;
+};
 
-export function coffeeOf(bean: ObjectData, batch: ObjectData | null): Coffee {
+export function coffeeOf(bean: ObjectData, batch: ObjectData | null, asOf = today()): Coffee {
   const beanId = localId(bean.id), own = tag(bean);
+  const age = {
+    roastDate: day(batch?.roastDate), frozen: batch?.frozen === true,
+    freezeDate: day(batch?.freezeDate), thawDate: day(batch?.unfreezeDate),
+    pastFrozenDays: pastFrozenDays(batch ?? {}),
+  };
+  // Invalid imported dates must not become an apparently never-frozen bag.
+  const invalidFreezerDate = [batch?.freezeDate, batch?.unfreezeDate].some((v) => v != null && v !== "" && !day(v));
   return {
     id: batch ? localId(batch.id) : `${BEAN_PREFIX}${beanId}`,
     beanId, batchId: batch ? localId(batch.id) : null,
@@ -81,7 +96,8 @@ export function coffeeOf(bean: ObjectData, batch: ObjectData | null): Coffee {
     harvestDate: text(batch?.harvestDate), qualityScore: number(batch?.qualityScore) ?? null,
     price: number(batch?.price) ?? null, currency: text(batch?.currency), buyDate: day(batch?.buyDate),
     weight: number(batch?.weight) ?? null, remaining: number(batch?.weightRemaining) ?? null,
-    frozen: batch?.frozen === true, freezeDate: day(batch?.freezeDate), thawDate: day(batch?.unfreezeDate),
+    frozen: age.frozen, freezeDate: age.freezeDate, thawDate: age.thawDate, pastFrozenDays: age.pastFrozenDays,
+    restingDays: invalidFreezerDate ? null : coffeeRestingDays(age, asOf),
     openDate: day(batch?.openDate), bestBefore: day(batch?.bestBeforeDate),
     bagNotes: text(batch?.notes),
     finished: batch?.archived === true || bean.archived === true,
@@ -269,8 +285,26 @@ export function batchBody(input: CoffeeInput, existing: ObjectData | null, now: 
   if ("frozen" in input) {
     body.frozen = input.frozen === true;
     const was = existing?.frozen === true;
-    if (body.frozen && !was && !("freezeDate" in input)) body.freezeDate = decaidDay(now);
+    if (body.frozen && !was) {
+      const previous = coffeeFreezerDays({
+        frozen: false, freezeDate: day(existing?.freezeDate), thawDate: day(existing?.unfreezeDate),
+      }, now);
+      const invalidDate = [existing?.freezeDate, existing?.unfreezeDate].some((v) => v != null && v !== "" && !day(v));
+      const past = pastFrozenDays(existing ?? {});
+      if (previous === null || invalidDate || past === null || past < 0 || ("thawDate" in input && input.thawDate !== null)) throw new Error("invalidFreezerDates");
+      if (!("freezeDate" in input)) body.freezeDate = decaidDay(now);
+      const start = day(body.freezeDate), lastThaw = day(existing?.unfreezeDate);
+      if (start && (start > now || (lastThaw && start < lastThaw))) throw new Error("invalidFreezerDates");
+      body.unfreezeDate = null;
+      if (previous > 0) body.extras = mergedExtras(existing ?? {}, { pastFrozenDays: past + previous });
+    }
     if (!body.frozen && was && !("thawDate" in input)) body.unfreezeDate = decaidDay(now);
+  }
+  if ("frozen" in input || "freezeDate" in input || "thawDate" in input) {
+    const frozen = "frozen" in input ? body.frozen === true : existing?.frozen === true;
+    const freeze = day("freezeDate" in body ? body.freezeDate : existing?.freezeDate);
+    const thaw = day("unfreezeDate" in body ? body.unfreezeDate : existing?.unfreezeDate);
+    if ((freeze && freeze > now) || (!frozen && thaw && (thaw > now || (freeze && thaw < freeze)))) throw new Error("invalidFreezerDates");
   }
   if ("remaining" in input) {
     const remaining = input.remaining as number | null;

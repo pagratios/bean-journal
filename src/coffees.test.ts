@@ -10,13 +10,14 @@ describe("Coffees from Decaid's beans and batches", () => {
       notes: "Peach", extras: { beanJournal: { farm: "Hambela", link: "https://shop.example/rb", photo: "2026-10-01T10:00:00.000Z" }, beanbox: { bag_id: "x" } } });
     const card = coffeeOf(b, batch("t1", "b1", { roastDate: "2026-10-01T00:00:00", roastLevel: "light", weight: 250, weightRemaining: 180, frozen: true,
       freezeDate: "2026-10-03T00:00:00", unfreezeDate: null, openDate: "2026-10-04T00:00:00", bestBeforeDate: "2027-01-01T00:00:00", notes: "Bag 1",
-      harvestDate: "2025", qualityScore: 86.5, price: 21, currency: "GBP", buyDate: "2026-10-02T00:00:00" }));
+      harvestDate: "2025", qualityScore: 86.5, price: 21, currency: "GBP", buyDate: "2026-10-02T00:00:00" }), "2026-10-20");
     expect(card).toEqual({
       id: "t1", beanId: "b1", batchId: "t1", roaster: "Square Mile", name: "Red Brick", country: "Ethiopia", region: "Guji", producer: "Coop", farm: "Hambela",
       varieties: ["74110"], altitude: [1900, 2100], process: "washed", decaf: false, tastingNotes: "Peach", link: "https://shop.example/rb",
       photo: "2026-10-01T10:00:00.000Z", roastDate: "2026-10-01", roastLevel: "light", weight: 250, remaining: 180, frozen: true, freezeDate: "2026-10-03",
       thawDate: null, openDate: "2026-10-04", bestBefore: "2027-01-01", bagNotes: "Bag 1", finished: false, createdAt: "2026-02-01T10:00:00",
       species: "Arabica", decafProcess: "", harvestDate: "2025", qualityScore: 86.5, price: 21, currency: "GBP", buyDate: "2026-10-02",
+      pastFrozenDays: 0, restingDays: 2,
     });
     expect(coffeeOf(bean("b2", { extras: { beanJournal: { link: "http://insecure.example" } } }), null)).toMatchObject({ id: "bean:b2", batchId: null, link: "", photo: null, weight: null });
   });
@@ -64,6 +65,8 @@ describe("Coffees from Decaid's beans and batches", () => {
   it("checks the form and converts dates both ways", () => {
     expect(day("2026-10-01T00:00:00")).toBe("2026-10-01");
     expect(day("")).toBeNull();
+    expect(day("2026-02-30T00:00:00")).toBeNull();
+    expect(day("2026-10-01Tbad")).toBeNull();
     expect(decaidDay("2026-02-28")).toBe("2026-02-28T00:00:00");
     expect(() => decaidDay("2026-02-30")).toThrow("invalidArguments");
     expect(today(new Date(2026, 0, 5, 23, 30))).toBe("2026-01-05");
@@ -95,7 +98,7 @@ describe("Writing coffees to Decaid", () => {
   it("dates freezing and thawing today unless given, and sends the grams left and finished after a new bag's POST", () => {
     const fresh = batchBody(coffeeInput({ roastDate: "2026-10-01", weight: 250, remaining: 200, frozen: true, finished: false, bagNotes: "n" }), null, "2026-10-16");
     expect(fresh).toEqual({
-      body: { roastDate: "2026-10-01T00:00:00", weight: 250, frozen: true, freezeDate: "2026-10-16T00:00:00", notes: "n" },
+      body: { roastDate: "2026-10-01T00:00:00", weight: 250, frozen: true, freezeDate: "2026-10-16T00:00:00", unfreezeDate: null, notes: "n" },
       after: { weightRemaining: 200, archived: false },
     });
     const frozen = batch("t1", "b1", { frozen: true, weight: 250 });
@@ -108,5 +111,62 @@ describe("Writing coffees to Decaid", () => {
     expect(batchBody(coffeeInput({ harvestDate: "2025", qualityScore: 86.556, price: 18.499, currency: "EUR", buyDate: "2026-10-01" }), null, "2026-10-16").body)
       .toEqual({ harvestDate: "2025", qualityScore: 86.56, price: 18.5, currency: "EUR", buyDate: "2026-10-01T00:00:00" });
     expect(batchBody(coffeeInput({ price: null, currency: "", buyDate: null }), frozen, "2026-10-16").body).toEqual({ price: null, currency: null, buyDate: null });
+  });
+
+  it("keeps earlier freezer cycles when refrozen, preserving other batch extras", () => {
+    let saved: Record<string, unknown> = batch("t1", "b1", {
+      roastDate: "2026-10-01T00:00:00", freezeDate: "2026-10-04T00:00:00", unfreezeDate: "2026-10-09T00:00:00",
+      extras: { other: { keep: true }, beanJournal: { note: "keep" } },
+    });
+    const save = (fields: Record<string, unknown>, now: string) => {
+      saved = { ...saved, ...batchBody(coffeeInput(fields), saved, now).body };
+      return coffeeOf(bean("b1"), saved, now);
+    };
+    expect(save({ frozen: true }, "2026-10-12")).toMatchObject({ frozen: true, freezeDate: "2026-10-12", thawDate: null, pastFrozenDays: 5, restingDays: 6 });
+    expect(saved.extras).toEqual({ other: { keep: true }, beanJournal: { note: "keep", pastFrozenDays: 5 } });
+    expect(save({ frozen: true }, "2026-10-13").pastFrozenDays).toBe(5);
+    expect(save({ frozen: false }, "2026-10-16")).toMatchObject({ pastFrozenDays: 5, restingDays: 6, thawDate: "2026-10-16" });
+    expect(save({ thawDate: "2026-10-15" }, "2026-10-17").restingDays).toBe(8);
+    expect(save({ frozen: true, freezeDate: "2026-10-18", thawDate: null }, "2026-10-18"))
+      .toMatchObject({ pastFrozenDays: 8, restingDays: 9, thawDate: null });
+    expect(save({ frozen: false }, "2026-10-20").restingDays).toBe(9);
+    expect(save({ freezeDate: null }, "2026-10-21").restingDays).toBeNull();
+    expect(save({ thawDate: null }, "2026-10-21")).toMatchObject({ pastFrozenDays: 8, restingDays: 12 });
+    expect(save({ roastDate: null }, "2026-10-21").restingDays).toBeNull();
+    expect(save({ roastDate: "2026-10-02" }, "2026-10-21").restingDays).toBe(11);
+  });
+
+  it("counts same-day cycles as zero and lets cleared freezer dates remain unknown while frozen", () => {
+    const saved = batch("t1", "b1", { roastDate: "2026-10-01", freezeDate: "2026-10-10", unfreezeDate: "2026-10-10" });
+    const cold = { ...saved, ...batchBody(coffeeInput({ frozen: true, freezeDate: null }), saved, "2026-10-20").body };
+    expect(coffeeOf(bean("b1"), cold, "2026-10-20")).toMatchObject({ pastFrozenDays: 0, restingDays: null, thawDate: null });
+    const dated = { ...cold, ...batchBody(coffeeInput({ freezeDate: "2026-10-20" }), cold, "2026-10-20").body };
+    expect(coffeeOf(bean("b1"), dated, "2026-10-20")).toMatchObject({ pastFrozenDays: 0, restingDays: 19 });
+  });
+
+  it("does not lose an incomplete previous cycle on refreezing or invent ages for bad imports", () => {
+    for (const dates of [
+      { freezeDate: "2026-10-03T00:00:00" },
+      { freezeDate: "2026-02-30T00:00:00", unfreezeDate: "2026-03-02T00:00:00" },
+      { freezeDate: "2026-10-10T00:00:00", unfreezeDate: "2026-10-03T00:00:00" },
+    ]) {
+      const saved = batch("t1", "b1", { roastDate: "2026-10-01", ...dates });
+      expect(coffeeOf(bean("b1"), saved, "2026-10-20").restingDays).toBeNull();
+      expect(() => batchBody(coffeeInput({ frozen: true }), saved, "2026-10-20")).toThrow("invalidFreezerDates");
+    }
+    expect(coffeeOf(bean("b1"), batch("t1", "b1", { roastDate: "2026-02-30" }), "2026-10-20").restingDays).toBeNull();
+  });
+
+  it("refuses reversed, overlapping and future freezer edits", () => {
+    const saved = batch("t1", "b1", { freezeDate: "2026-10-03T00:00:00", unfreezeDate: "2026-10-10T00:00:00" });
+    for (const fields of [
+      { frozen: true, freezeDate: "2026-10-09" }, { frozen: true, thawDate: "2026-10-10" },
+      { freezeDate: "2026-10-11" }, { thawDate: "2026-10-02" }, { thawDate: "2026-10-21" },
+    ]) expect(() => batchBody(coffeeInput(fields), saved, "2026-10-20"), JSON.stringify(fields)).toThrow("invalidFreezerDates");
+    for (const pastFrozenDays of [null, "5", -1]) {
+      const bad = { ...saved, extras: { beanJournal: { pastFrozenDays } } };
+      expect(coffeeOf(bean("b1"), { ...bad, roastDate: "2026-10-01" }, "2026-10-20").restingDays).toBeNull();
+      expect(() => batchBody(coffeeInput({ frozen: true }), bad, "2026-10-20")).toThrow("invalidFreezerDates");
+    }
   });
 });

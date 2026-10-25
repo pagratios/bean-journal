@@ -16,6 +16,7 @@ function client(t: Copy) {
     process: string; decaf: boolean; tastingNotes: string; link: string; photo: string | null;
     roastDate: string | null; roastLevel: string; weight: number | null; remaining: number | null;
     frozen: boolean; freezeDate: string | null; thawDate: string | null; openDate: string | null; bestBefore: string | null;
+    pastFrozenDays: number | null; restingDays: number | null;
     bagNotes: string; finished: boolean; createdAt: string;
   };
   type Series = { t: number[]; pressure: (number | null)[]; flow: (number | null)[]; weight: (number | null)[]; temp: (number | null)[];
@@ -1385,6 +1386,7 @@ function client(t: Copy) {
       process: str(o.process), decaf: o.decaf === true, tastingNotes: str(o.tastingNotes), link: str(o.link), photo: opt(o.photo),
       roastDate: opt(o.roastDate), roastLevel: str(o.roastLevel), weight: num(o.weight), remaining: num(o.remaining),
       frozen: o.frozen === true, freezeDate: opt(o.freezeDate), thawDate: opt(o.thawDate), openDate: opt(o.openDate),
+      pastFrozenDays: num(o.pastFrozenDays), restingDays: num(o.restingDays),
       bestBefore: opt(o.bestBefore), bagNotes: str(o.bagNotes), finished: o.finished === true, createdAt: str(o.createdAt),
     };
   }
@@ -1518,10 +1520,19 @@ function client(t: Copy) {
   // Roasted, and the freezer: in it since, or out since.
   function bagDates(c: Coffee) {
     const dates = el("div", "card-dates");
+    const age = restingAge(c);
+    if (age) dates.append(age);
     if (c.roastDate) dates.append(el("span", "", `${t.roasted} ${shortDate(c.roastDate)}`));
     if (c.frozen) dates.append(el("span", "frozen", c.freezeDate ? `❄ ${shortDate(c.freezeDate)}` : `❄ ${t.frozen}`));
     else if (c.thawDate) dates.append(el("span", "", `${t.thawed} ${shortDate(c.thawDate)}`));
     return dates;
+  }
+  function restingAge(c: Coffee) {
+    if (c.restingDays === null) return null;
+    const age = el("span", "resting-age", t.restingAge.replace("{days}", String(c.restingDays)));
+    age.title = t.restingAgeTitle.replace("{days}", String(c.restingDays));
+    age.setAttribute("aria-label", age.title);
+    return age;
   }
   function card(c: Coffee, picking = false) {
     const node = el("button", "card");
@@ -1626,6 +1637,8 @@ function client(t: Copy) {
       [t.altitude, c.altitude.length ? `${c.altitude.map((a) => fmt(a, 0)).join("–")} m` : ""],
       [t.variety, c.varieties.join(", ")], [t.process, c.process], [t.decaf, c.decaf ? "✓" : ""], [t.roast, c.roastLevel],
       [t.roastDate, longDate(c.roastDate)],
+      [t.resting, restingAge(c) ?? ""],
+      [t.pastFrozenDays, c.pastFrozenDays !== null && c.pastFrozenDays > 0 ? t.freezerDays.replace("{days}", String(c.pastFrozenDays)) : ""],
       // The freezer: in since (❄ while still in), and out since.
       [t.frozen, c.freezeDate ? `${c.frozen ? "❄ " : ""}${longDate(c.freezeDate)}` : c.frozen ? "❄" : ""],
       [t.thawed, !c.frozen && c.thawDate ? longDate(c.thawDate) : ""],
@@ -1658,7 +1671,7 @@ function client(t: Copy) {
     // A bag's freezer and finished state; a coffee without a bag has neither.
     const bagChange = (fields: Data, said: string) => async () => {
       const saved = asCoffee((await api("save-coffee", { id: c.id, fields })).coffee);
-      coffeesLoaded = false;
+      await ensureCoffees(true);
       say(said);
       await openDetail(saved.id || c.id);
     };
@@ -1683,6 +1696,8 @@ function client(t: Copy) {
       const text = el("div", "grow");
       const head = el("div", "suggestion-head");
       head.append(el("strong", "", b.roastDate ? `${t.roasted} ${shortDate(b.roastDate)}` : t.noBagDate));
+      const age = restingAge(b);
+      if (age) head.append(age);
       if (b.roastLevel) head.append(el("span", "muted", b.roastLevel));
       if (b.id === c.id) head.append(el("span", "badge", t.thisBag));
       if (nextId() === b.id) head.append(el("span", "badge ok", `✓ ${t.nextShot}`));
@@ -1857,8 +1872,13 @@ function client(t: Copy) {
     // Into the freezer or out of it: the day is today unless one is typed.
     inputs.frozen.addEventListener("change", () => {
       const on = (inputs.frozen as HTMLInputElement).checked;
-      if (on && !inputs.freezeDate.value) inputs.freezeDate.value = today();
-      if (!on && bagBase.frozen && !inputs.thawDate.value) inputs.thawDate.value = today();
+      if (on !== bagBase.frozen) {
+        if (on) { inputs.freezeDate.value = today(); inputs.thawDate.value = ""; }
+        else inputs.thawDate.value = today();
+      } else {
+        inputs.freezeDate.value = day(bagBase.freezeDate);
+        inputs.thawDate.value = day(bagBase.thawDate);
+      }
     });
     // Photo and notes
     const photoCol = el("div", "form-col photo-col");
@@ -2661,6 +2681,7 @@ button.attention{box-shadow:0 0 0 0.2rem var(--bg),0 0 0 0.367rem var(--accent)}
 .badges{display:flex;flex-wrap:wrap;gap:0.267rem;margin-top:2px}.badge{padding:1px 0.533rem;border-radius:66.6rem;background:var(--accent-soft);font-size:0.733rem;white-space:nowrap}.badge.ok{background:var(--ok-soft);color:var(--ui-ok-ink);font-weight:650}.badge.frozen{color:var(--c-flow)}
 .stock{display:flex;align-items:center;gap:0.4rem;margin-top:2px}.stock-text{font-size:0.8rem;font-weight:650;white-space:nowrap}.stock-bar{flex:1;height:0.267rem;border-radius:66.6rem;background:var(--track);overflow:hidden;min-width:2.5rem}.stock-bar i{display:block;height:100%;border-radius:inherit}
 .card-dates{display:flex;flex-wrap:wrap;gap:0 0.667rem;font-size:0.8rem;color:var(--muted)}.card-dates .frozen{color:var(--c-flow)}
+.resting-age{font-size:0.8rem;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink)}
 /* A coffee's page: the photo and details on top; its bags and its shots side by side, each scrolling on its own. */
 #coffee-detail{flex:1;min-height:0;display:flex;flex-direction:column}
 .detail-top{flex:none;display:flex;gap:1.2rem;padding:0.267rem 0 0.8rem;border-bottom:1px solid var(--ui-divider);align-items:flex-start;max-height:58%;min-height:0;overflow-y:auto}.detail-top h2{font-size:1.6rem;letter-spacing:-.025em}.detail-top .facts{gap:0.4rem 1.333rem;margin:0.4rem 0}

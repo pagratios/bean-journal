@@ -32,6 +32,8 @@ a long-press menu item, a screensaver button and overlay pages, from small to fu
   **Open in Visualizer** and Delete (it asks). Edits are saved on Decaid's shot, and saved before the page closes
   when an espresso starts.
 - **Coffees**: your bags, with photo, roaster, origin, process, grams left, roast date and frozen; search and filters.
+  A small **5d** on cards and in the picker means resting days since roasting, excluding freezer time. It pauses
+  while frozen and resumes after thawing; no age is shown without a valid roast date or with incomplete freezer dates.
   Here and in the picker, the selected unfinished bag comes first, then the last brewed shot (newest first);
   finished bags stay last and greyed, behind the **Finished** switch, even when selected. Equal or missing brew times
   keep the previous order (newest roast, then newest added). **Add coffee**. With 10 or more old bags in use (no
@@ -64,6 +66,7 @@ explicitly with `load_profile`, takes precedence and becomes the new remembered 
 | --- | --- |
 | A coffee | A bean: roaster, name, country, region, producer, varieties, altitude, process, decaf, notes (the tasting notes); species and decaf process (set by assistants). The farm and roaster's page go in its `extras.beanJournal`. |
 | A bag | A bean batch: roast date and level, weight, grams left (Decaid takes each shot's dose off), frozen and its dates, opened, best before, notes; harvest, cupping score, price and currency, buy date (set by assistants). Finished = archived. |
+| Earlier freezer time | The batch's `extras.beanJournal.pastFrozenDays`: completed calendar days before its latest freeze/thaw interval. Other apps' batch extras are preserved. |
 | A photo | The key-value store, `beanJournal-photos/<bean id>`: a resized JPEG, or an https image address an assistant gave (the page shows it from the web). |
 | Waters | The next shot's in the workflow (`context.extras.beanJournal.water`), each shot's in its annotations; the list (recent ones first, kept in Settings) in `beanJournal/waters`. |
 | Old bags offered | `beanJournal/oldBags` in the key-value store, once answered. |
@@ -72,6 +75,13 @@ explicitly with `load_profile`, takes precedence and becomes the new remembered 
 
 Bean Journal never deletes beans, batches or grinders: a grinder put away in Settings is archived in Decaid (shots
 made with it keep it). It deletes a shot only when you confirm it.
+
+**Freeze / Thaw** on a coffee's page applies to the whole bag, dated today on the tablet. Refreezing keeps the last
+completed stay in the earlier total and clears the old thaw date. The edit form starts a new stay the same way; its
+latest dates remain editable. Changing or clearing both latest dates changes only that stay, never earlier freezer
+time. Clearing only one date leaves the age unknown until the pair is repaired. An incomplete earlier stay must be
+corrected before refreezing so it is not silently lost. Reversed, overlapping or future freezer dates are refused.
+Calendar days, not elapsed 24-hour periods, are counted, so daylight-saving changes do not change the result.
 
 ## Visualizer
 
@@ -244,6 +254,38 @@ Every refresh rebuilds the map, removing deleted/reassigned uses rather than onl
 reads share a scan; invalidation during a scan discards and retries it, rejecting with `coffeeHistoryChanged` after
 three busy attempts. Read/adapter errors reject without caching partial history. `lastBrewed()` returns a defensive
 map copy. The host must surface errors and reject reads after unload; invalidate on unload/reload as well.
+
+### Resting age and freezer intervals
+
+`coffeeRestingDays`, `coffeeFreezerDays` and `CoffeeAgeInput` are exported from `bean-journal/core`. These are pure
+runtime helpers; the host owns bag storage and freeze/thaw writes:
+
+```ts
+import { coffeeRestingDays, coffeeFreezerDays } from "bean-journal/core";
+
+const bag = {
+  roastDate: "2026-10-01",
+  frozen: false,
+  freezeDate: "2026-10-06",
+  thawDate: "2026-10-16",
+  pastFrozenDays: 0,
+};
+coffeeFreezerDays(bag, "2026-10-20"); // 10
+coffeeRestingDays(bag, "2026-10-20"); // 9
+```
+
+Dates are real `YYYY-MM-DD` calendar days, not timestamps. Supply today's day in the user's timezone, not a UTC day
+from `toISOString()`. `pastFrozenDays` counts completed stays **before** the latest interval; omit it for zero, or
+pass `null` for an unknown total. A currently frozen bag counts its latest stay through today and ignores a stale
+thaw date; a thawed bag counts through its thaw date. No dates on a thawed bag means no latest interval.
+`coffeeFreezerDays` returns only the latest interval's days, **not** the earlier total.
+
+Both helpers return `null` for invalid/incomplete intervals; `coffeeRestingDays` also returns `null` for a missing,
+invalid or future roast, a freeze before roasting, or an invalid earlier total. Otherwise it returns a whole
+non-negative resting day count (fractional earlier totals are accepted and the result is floored, clamped at zero).
+On refreeze, the host adds `coffeeFreezerDays` for the completed stay to the earlier total exactly once, starts a new
+freeze date no earlier than the last thaw and clears the thaw date. Edits to the latest dates must not add to the
+earlier total. These helpers do not import product-specific identities, APIs or persistence.
 
 ### Persistent ratio runtime
 
