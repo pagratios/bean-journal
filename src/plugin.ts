@@ -15,7 +15,7 @@ import { copy, page } from "./ui";
 import { MCP_CONFIRMS, MCP_LEVELS, MCP_TOKEN, mcpMessage, rateLimit, type McpConfirm, type McpLevel } from "./mcp";
 
 export const PLUGIN_ID = "bean-journal.reaplugin";
-export const VERSION = "0.1.5";
+export const VERSION = "0.1.6";
 // How long the newest shot is taken as known without a shot event (a deletion sends none).
 const LATEST_MS = 15000;
 // The beans and batches (hundreds of each on a real tablet) are read in one go and kept this long; writes forget them.
