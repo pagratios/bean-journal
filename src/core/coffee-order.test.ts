@@ -245,4 +245,46 @@ describe("coffee brew history", () => {
     expect(readShot).toHaveBeenCalledTimes(2);
     expect(readShots).toHaveBeenCalledTimes(1);
   });
+  it("bounds cold reads to four in flight, reads exact-cap totals completely and waits for all pages", async () => {
+    const shots = Array.from({ length: 500 }, (_, i) => ({ id: `s${i}`, bag: `bag${i}`, timestamp: i }));
+    const gates = Array.from({ length: 5 }, () => deferred<Shot[]>());
+    const readShots = vi.fn((offset: number) => gates[offset / 100].promise);
+    const { history } = setup(shots, { readShots });
+    let finished = false;
+    const reading = history.lastBrewed().then((result) => { finished = true; return result; });
+    await vi.waitFor(() => expect(readShots).toHaveBeenCalledTimes(4));
+    expect(finished).toBe(false);
+    for (const i of [2, 0, 3]) gates[i].resolve(shots.slice(i * 100, (i + 1) * 100));
+    await Promise.resolve();
+    expect(readShots).toHaveBeenCalledTimes(4);
+    gates[1].resolve(shots.slice(100, 200));
+    await vi.waitFor(() => expect(readShots).toHaveBeenCalledTimes(5));
+    expect(finished).toBe(false);
+    gates[4].resolve(shots.slice(400));
+    expect((await reading).size).toBe(500);
+    expect(readShots.mock.calls).toEqual([[0, 100], [100, 100], [200, 100], [300, 100], [400, 100]]);
+  });
+  it.each(["synchronous", "asynchronous"] as const)("drains %s page failures before reads reject or retries start", async (mode) => {
+    const shots = Array.from({ length: 205 }, (_, i) => ({ id: `s${i}`, bag: "a", timestamp: i }));
+    const slow = deferred<Shot[]>();
+    const readShots = vi.fn((offset: number) => {
+      if (offset === 0) {
+        if (mode === "synchronous") throw new Error("page offline");
+        return Promise.reject(new Error("page offline"));
+      }
+      return offset === 100 ? slow.promise : Promise.resolve(shots.slice(200));
+    });
+    const { history } = setup(shots, { readShots });
+    let failed = false;
+    const reading = history.lastBrewed().catch((error: unknown) => { failed = true; throw error; });
+    const rejection = expect(reading).rejects.toThrow("page offline");
+    await vi.waitFor(() => expect(readShots).toHaveBeenCalledTimes(3));
+    await Promise.resolve();
+    expect(failed).toBe(false);
+    slow.resolve(shots.slice(100, 200));
+    await rejection;
+    readShots.mockImplementation(async (offset) => shots.slice(offset, offset + 100));
+    expect((await history.lastBrewed()).get("a")).toBe(204);
+    expect(readShots).toHaveBeenCalledTimes(6);
+  });
 });

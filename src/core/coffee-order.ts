@@ -76,16 +76,24 @@ export function createCoffeeHistory<Shot>(options: CoffeeHistoryOptions<Shot>) {
   async function scan(version: number) {
     const before = await ids(), uses = new Map<string, Use>(), limit = 100;
     check(version);
-    for (let offset = 0; ; ) {
-      const shots = await options.readShots(offset, limit);
+    const pages = Math.max(1, Math.ceil(before.size / limit));
+    for (let page = 0; page < pages; page += 4) {
+      // Bound tablet load, and drain every read before retrying so failed/invalidated scans never overlap.
+      const results = await Promise.allSettled(Array.from({ length: Math.min(4, pages - page) },
+        async (_, i) => options.readShots((page + i) * limit, limit)));
+      for (const result of results) if (result.status === "rejected") throw result.reason;
       check(version);
-      if (!Array.isArray(shots) || shots.length > limit) throw new Error("invalidData");
-      for (const shot of shots) {
-        if (uses.has(options.shotId(shot))) throw changed;
-        await use(shot, uses, version);
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        if (result.status !== "fulfilled") throw new Error("invalidData");
+        const shots = result.value, offset = (page + i) * limit;
+        if (!Array.isArray(shots) || shots.length > limit) throw new Error("invalidData");
+        if (shots.length !== Math.min(limit, before.size - offset)) throw changed;
+        for (const shot of shots) {
+          if (uses.has(options.shotId(shot))) throw changed;
+          await use(shot, uses, version);
+        }
       }
-      offset += shots.length;
-      if (shots.length < limit) break;
     }
     const after = await ids();
     check(version);

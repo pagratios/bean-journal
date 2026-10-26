@@ -32,14 +32,15 @@ function makeShot(id: string, ageSeconds: number, context: ObjectData = {}, anno
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach((f) => f()); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-type World = { beans?: ObjectData[]; batches?: ObjectData[]; phase?: string; slowWorkflow?: number; settingsStatus?: number; sensors?: ObjectData[]; workflowEvents?: boolean };
+type World = { beans?: ObjectData[]; batches?: ObjectData[]; shots?: ObjectData[]; latencyMs?: number;
+  phase?: string; slowWorkflow?: number; settingsStatus?: number; sensors?: ObjectData[]; workflowEvents?: boolean };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 function setup(settings: ObjectData = {}, world: World = {}) {
   vi.stubGlobal("__DECAID_COPY__", texts);
   vi.stubGlobal("__DECAID_THEME__", ":root{--bg:white}");
   let workflow: ObjectData = { profile, context: { targetDoseWeight: 18, targetYield: 36 } };
-  const shots = new Map<string, ObjectData>();
+  const shots = new Map<string, ObjectData>((world.shots ?? []).map((shot) => [String(shot.id), shot]));
   const store = new Map<string, unknown>();
   const beans: ObjectData[] = world.beans ?? [];
   const batches: ObjectData[] = world.batches ?? [];
@@ -55,6 +56,7 @@ function setup(settings: ObjectData = {}, world: World = {}) {
     const method = init.method || "GET";
     const body: unknown = init.body ? JSON.parse(String(init.body)) : null;
     calls.push({ url, method, body });
+    if (world.latencyMs) await new Promise((resolve) => setTimeout(resolve, world.latencyMs));
     if (!url.startsWith("http://localhost:8080/api/v1/")) throw new Error(`Outside Decaid: ${url}`);
     const path = url.slice("http://localhost:8080/api/v1".length);
     const [route, query = ""] = path.split("?");
@@ -337,6 +339,38 @@ describe("Bean Journal plugin", () => {
     expect(await listing()).toEqual(["t1", "t2", "t3"]);
     expect(pages()).toBe(before + 1);
   });
+
+  it("loads the actual coffee response below one second across 15-second periods with 4,205 shots and request latency", async () => {
+    const initial = Array.from({ length: 4205 }, (_, i) => ({
+      ...makeShot(`s${i}`, -i, { beanBatchId: i === 4204 ? "t3" : "t1" }), measurements: [],
+    }));
+    let clockOffset = 0;
+    const realNow = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + clockOffset);
+    const t = setup({}, { ...ratioWorld(), shots: initial, latencyMs: 300 });
+    const measurements: { scenario: string; ms: number; pages: number; probes: number }[] = [];
+    const counts = () => ({ pages: t.calls.filter((c) => c.url.includes("/shots?")).length,
+      probes: t.calls.filter((c) => c.url.endsWith("/shots/ids")).length });
+    const listing = async (scenario: string) => {
+      const start = performance.now(), before = measurements.length ? counts() : { pages: 0, probes: 0 };
+      const response = await t.ok({ action: "coffees" });
+      const after = counts();
+      measurements.push({ scenario, ms: Math.round(performance.now() - start),
+        pages: after.pages - before.pages, probes: after.probes - before.probes });
+      expect(response.coffees.map((c: ObjectData) => c.id)).toEqual(["t1", "t3", "t2"]);
+    };
+    try {
+      await listing("first actual coffee response");
+      expect(counts()).toEqual({ pages: 43, probes: 2 });
+      for (let period = 1; period <= 4; period++) {
+        clockOffset += 15000;
+        await listing(`actual coffee response +${period * 15}s`);
+        expect(measurements.at(-1)).toMatchObject({ pages: 1, probes: 1 });
+        expect(measurements.at(-1)!.ms).toBeLessThan(1000);
+      }
+      console.table(measurements);
+    } finally { clock.mockRestore(); }
+  }, 15000);
 
   it("lists coffees, saves one, asks about a duplicate and adds a bag", async () => {
     const t = setup({}, {

@@ -37,6 +37,7 @@ it("measures a retained index over 4,205 shots with 100-item caps and 300ms requ
   try {
     expect((await measure("cold / first view")).get("bag39")).toBe(4961);
     expect(measurements[0]).toMatchObject({ pages: 43, ids: 2, shots: 0 });
+    expect(measurements[0].ms).toBeLessThan(6000);
     for (let period = 1; period <= 4; period++) {
       clockOffset += 15000;
       await measure(`unchanged +${period * 15}s`);

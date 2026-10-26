@@ -268,8 +268,11 @@ There is no Decaid modified-since/revision API: an ID-only probe cannot detect e
 update immediately on the next read; a missed same-ID edit is found when the rolling audit reaches its page
 (43 active refresh periods, about 10m45s, for 4,205 unchanged shots). Audit progress requires reads; this is not a
 claim of exact instantaneous change detection. The first read in a new runtime does a complete scan, bracketed by
-ID checks; Bean Journal starts this on load, but a view opened before initialization finishes waits for the exact
-order. No partial map is shown and no later background initialization reorders visible cards.
+ID checks. Initialization reads at most four 100-item pages concurrently, draining the batch on failure or
+invalidation before retrying; it never increases the page size. Bean Journal starts this on load, but a view opened
+before initialization finishes waits for the exact order. No partial map is shown and no later background
+initialization reorders visible cards. This deliberately preserves exact startup rather than labelling a saved,
+unverified order as current.
 
 Concurrent reads share one operation, including retries. Invalidations during an operation discard its candidate,
 retrying at most three times before `coffeeHistoryChanged`. Failed pages/probes/identity lookups reject, preserve
