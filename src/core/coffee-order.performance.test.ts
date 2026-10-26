@@ -35,7 +35,7 @@ it("measures a retained index over 4,205 shots with 100-item caps and 300ms requ
     }
   }
   try {
-    expect((await measure("cold / first view")).get("bag39")).toBe(4961);
+    expect((await measure("strict cold validation")).get("bag39")).toBe(4961);
     expect(measurements[0]).toMatchObject({ pages: 43, ids: 2, shots: 0 });
     expect(measurements[0].ms).toBeLessThan(6000);
     for (let period = 1; period <= 4; period++) {
@@ -62,7 +62,9 @@ it("measures a retained index over 4,205 shots with 100-item caps and 300ms requ
     expect(measurements.at(-1)).toMatchObject({ pages: 1, ids: 1, shots: 0 });
     for (const sample of measurements.slice(5)) expect(sample.ms).toBeLessThan(1000);
     clockOffset += 15000;
+    const beforeProbe = counts.ids;
     const changing = measure("concurrent invalidation");
+    await vi.waitFor(() => expect(counts.ids).toBe(beforeProbe + 1));
     history.invalidate("s1");
     const shared = history.lastBrewed();
     expect([...await changing]).toEqual([...await shared]);

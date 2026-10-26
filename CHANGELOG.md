@@ -6,8 +6,13 @@
   Refresh changed shots by ID; preserve older brews when a shot is reassigned or deleted.
 - Detect silent deletions and missed additions with a lightweight ID probe, and audit one page per refresh period
   for missed edits. Keep Decaid's actual 100-shot page cap; surface failed probes rather than returning stale success.
-- Start exact history initialization when the plugin loads, reading at most four 100-item pages concurrently without
-  showing partial order. Export retained history and its identity/probe adapters from `bean-journal/core` for other plugins.
+- Open Coffees and the picker using saved last-known brew order immediately after a restart, marked while refreshing.
+  With missing or unreadable saved history, explicitly show provisional roast-date order while rebuilding. Keep fresh
+  selection and finished state, surface background/storage errors with Retry, and defer card movement during a touch.
+- Validate history in the background with at most four concurrent 100-item reads, without trusting saved order as
+  current. Persist only derived shot/bag identities and brew times; reuse the index for the old-bags offer.
+- Export retained history, versioned persistence, nonblocking snapshots/status and the strict await-validation API
+  from `bean-journal/core` for other plugins, with the same reusable pointer/idle guard used by the public UI.
 
 ## 0.1.5
 

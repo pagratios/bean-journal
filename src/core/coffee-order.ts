@@ -32,12 +32,32 @@ export type CoffeeHistoryOptions<Shot> = {
   brewedAt: (shot: Shot) => number | null;
   /** Interval between membership probes and one-page missed-edit audits, measured from completion. Default: 15s. */
   probeIntervalMs?: number;
+  /** Optional pair, scoped to the same local host as readShots; never share an index across hosts/accounts.
+   * Null means missing; other read/write failures reject. Only derived history is saved. */
+  readMemory?: () => Promise<unknown>;
+  writeMemory?: (data: CoffeeHistoryData) => Promise<void>;
+  onError?: (error: unknown) => void;
 };
+
+export type CoffeeHistoryData = {
+  version: 1;
+  savedAt: number;
+  entries: { shotId: string; coffeeId: string | null; brewedAt: number | null }[];
+};
+export type CoffeeHistoryStatus = {
+  source: "none" | "saved" | "current";
+  stale: boolean;
+  refreshing: boolean;
+  savedAt: number | null;
+  cache: "missing" | "invalid" | null;
+  error: string | null;
+};
+export type CoffeeHistorySnapshot = { lastBrewed: ReadonlyMap<string, number>; status: CoffeeHistoryStatus };
 
 /** Retains every shot's use, so removing/reassigning a winner reveals the next brew without rescanning history. */
 export function createCoffeeHistory<Shot>(options: CoffeeHistoryOptions<Shot>) {
   const interval = options.probeIntervalMs ?? 15000;
-  if (!Number.isFinite(interval) || interval < 0) throw new Error("invalidArguments");
+  if (!Number.isFinite(interval) || interval < 0 || !!options.readMemory !== !!options.writeMemory) throw new Error("invalidArguments");
   type Use = { coffee: string | null; time: number | null };
   type Snapshot = { uses: Map<string, Use>; lastBrewed: ReadonlyMap<string, number> };
   let generation = 0;
@@ -47,11 +67,64 @@ export function createCoffeeHistory<Shot>(options: CoffeeHistoryOptions<Shot>) {
   let rebuild = true;
   let probedAt: number | null = null;
   let auditOffset = 0;
+  let loading: Promise<void> | null = null;
+  let loaded = false;
+  let source: CoffeeHistoryStatus["source"] = "none";
+  let cache: CoffeeHistoryStatus["cache"] = null;
+  let savedAt: number | null = null;
+  let error: string | null = null;
+  let failedAt: number | null = null;
   const changed = new Error("coffeeHistoryChanged");
+  const errorCode = (value: unknown) => value instanceof Error ? value.message : "failed";
+  function report(value: unknown) {
+    error = errorCode(value);
+    failedAt = Date.now();
+    options.onError?.(value);
+  }
+  function lastUses(uses: ReadonlyMap<string, Use>) {
+    const result = new Map<string, number>();
+    for (const { coffee, time } of uses.values()) {
+      if (coffee && time !== null && (!result.has(coffee) || time > result.get(coffee)!)) result.set(coffee, time);
+    }
+    return result;
+  }
+  async function load() {
+    if (loaded) return;
+    if (!loading) loading = (async () => {
+      try {
+        const raw = await options.readMemory?.();
+        if (raw == null) { cache = "missing"; return; }
+        try {
+          if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalidData");
+          const data = raw as Partial<CoffeeHistoryData>;
+          if (data.version !== 1 || typeof data.savedAt !== "number" || !Number.isFinite(data.savedAt)
+            || !Array.isArray(data.entries)) throw new Error("invalidData");
+          const uses = new Map<string, Use>();
+          for (const row of data.entries) {
+            if (!row || typeof row.shotId !== "string" || !row.shotId || uses.has(row.shotId)
+              || !(row.coffeeId === null || typeof row.coffeeId === "string" && !!row.coffeeId)
+              || !(row.brewedAt === null || typeof row.brewedAt === "number" && Number.isFinite(row.brewedAt)))
+              throw new Error("invalidData");
+            uses.set(row.shotId, { coffee: row.coffeeId, time: row.brewedAt });
+          }
+          cached = { uses, lastBrewed: lastUses(uses) };
+          source = "saved";
+          savedAt = data.savedAt;
+        } catch (failure) {
+          cache = "invalid";
+          report(failure);
+          failedAt = null;
+        }
+      } catch (failure) { report(failure); }
+      finally { loaded = true; }
+    })();
+    await loading;
+  }
 
   /** Supply an event/write's shot ID; no ID requests an explicit complete reconciliation. */
   function invalidate(id?: string) {
     generation++;
+    failedAt = null;
     if (id) dirty.add(id);
     else rebuild = true;
   }
@@ -143,11 +216,23 @@ export function createCoffeeHistory<Shot>(options: CoffeeHistoryOptions<Shot>) {
           }
         }
         check(version);
-        const lastBrewed = new Map<string, number>();
-        for (const { coffee, time } of uses.values()) {
-          if (coffee && time !== null && (!lastBrewed.has(coffee) || time > lastBrewed.get(coffee)!)) lastBrewed.set(coffee, time);
+        const at = Date.now();
+        const differs = !cached || uses.size !== cached.uses.size || [...uses].some(([id, use]) => {
+          const before = cached!.uses.get(id);
+          return !before || before.coffee !== use.coffee || before.time !== use.time;
+        });
+        if (options.writeMemory && (differs || source !== "current" || error)) {
+          await options.writeMemory({ version: 1, savedAt: at, entries: [...uses].map(([shotId, use]) => ({
+            shotId, coffeeId: use.coffee, brewedAt: use.time,
+          })) });
+          check(version);
+          savedAt = at;
         }
-        cached = { uses, lastBrewed };
+        cached = { uses, lastBrewed: lastUses(uses) };
+        source = "current";
+        cache = null;
+        error = null;
+        failedAt = null;
         dirty = new Set();
         rebuild = false;
         auditOffset = nextOffset;
@@ -159,14 +244,28 @@ export function createCoffeeHistory<Shot>(options: CoffeeHistoryOptions<Shot>) {
     }
     throw changed;
   }
+  function start() {
+    if (!pending) pending = refresh().catch((failure: unknown) => { report(failure); throw failure; })
+      .finally(() => { pending = null; });
+    return pending;
+  }
   async function lastBrewed(): Promise<ReadonlyMap<string, number>> {
-    if (!pending) {
-      pending = refresh().finally(() => { pending = null; });
-    }
-    await pending;
+    await load();
+    await start();
     if (rebuild || dirty.size) return lastBrewed();
     return new Map(cached!.lastBrewed);
   }
 
-  return { lastBrewed, invalidate };
+  /** Waits only for the small saved index, never the history scan. Errors and provisional order stay explicit. */
+  async function snapshot({ retry = false }: { retry?: boolean } = {}): Promise<CoffeeHistorySnapshot> {
+    await load();
+    const stale = rebuild || !!dirty.size || probedAt === null || Date.now() - probedAt >= interval || error !== null;
+    if (stale && (!error || retry || failedAt === null || Date.now() - failedAt >= interval))
+      void start().catch(() => { /* start records and reports the background error; snapshot exposes it. */ });
+    return { lastBrewed: new Map(cached?.lastBrewed), status: {
+      source, stale, refreshing: pending !== null, savedAt, cache, error,
+    } };
+  }
+
+  return { lastBrewed, snapshot, invalidate };
 }

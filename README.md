@@ -71,6 +71,7 @@ explicitly with `load_profile`, takes precedence and becomes the new remembered 
 | Waters | The next shot's in the workflow (`context.extras.beanJournal.water`), each shot's in its annotations; the list (recent ones first, kept in Settings) in `beanJournal/waters`. |
 | Old bags offered | `beanJournal/oldBags` in the key-value store, once answered. |
 | Ratio memory | `beanJournal/ratioMemory` in the key-value store: versioned choices by bean id and profile name/design, storing either an unlocked drink weight or a locked, unrounded ratio. Stop weight, brew temperature and notes do not change a profile's identity; a renamed or redesigned profile starts a new combination. |
+| Coffee order | `beanJournal/coffeeHistory` in the key-value store: a versioned, derived index of shot ids, exact bag ids and original brew times. No curves, notes or account data. It can be rebuilt without changing shots or coffees. |
 | A shot's rating | Decaid's own fields: `enjoyment` (score ÷ 10), `espressoNotes`, `drinkTds`, `drinkEy`, actual dose and yield; taste and body in `annotations.extras.beanJournal`. Grinder, grind and RPM (`extras.rpm`) on the shot's workflow context. |
 
 Bean Journal never deletes beans, batches or grinders: a grinder put away in Settings is archived in Decaid (shots
@@ -188,6 +189,9 @@ button pulls a 32 s shot (stored as Decaid stores shots), Sleep shows the screen
      previous tag. Decaid's "GitHub Release" install finds the file by that exact name at every update. Run by hand
      on a branch, the workflow only leaves a labelled artifact.
 
+Programmatic release automation can pass `coAuthor` to `prepare()` from `scripts/release.mjs` to credit its helper
+in the release commit; all normal branch, working-tree, changelog and tag checks still apply.
+
 ## Building another plugin on the core
 
 `src/core/` is the part of Bean Journal that any Decaid plugin for Streamline can share: Decaid's data read safely and
@@ -228,15 +232,19 @@ const history = createCoffeeHistory({
   shotId: (shot) => shot.id,
   coffeeId: (shot) => bagIdForShot(shot),
   brewedAt: (shot) => isActualBrew(shot) ? Date.parse(shot.timestamp) : null,
+  readMemory: () => readSavedHistoryOrNullIfMissing(),
+  writeMemory: (data) => saveHistory(data),
+  onError: (error) => logHistoryError(error),
 });
 
-const lastBrewed = await history.lastBrewed();
+const { lastBrewed, status } = await history.snapshot();
 const ordered = sortCoffees(bags, {
   coffeeId: (bag) => bag.id,
   isFinished: (bag) => bag.finished,
   selectedId: selectedBagId,
   lastBrewed,
 });
+// Display status beside the list; saved/absent/error history is never labelled current.
 ```
 
 `sortCoffees` returns a new array: unfinished before finished, the selected unfinished bag first, then newest brew
@@ -267,19 +275,52 @@ probe interval; it is not an index TTL (`maxAgeMs` is no longer an option).
 There is no Decaid modified-since/revision API: an ID-only probe cannot detect edits to existing IDs. Normal events
 update immediately on the next read; a missed same-ID edit is found when the rolling audit reaches its page
 (43 active refresh periods, about 10m45s, for 4,205 unchanged shots). Audit progress requires reads; this is not a
-claim of exact instantaneous change detection. The first read in a new runtime does a complete scan, bracketed by
-ID checks. Initialization reads at most four 100-item pages concurrently, draining the batch on failure or
-invalidation before retrying; it never increases the page size. Bean Journal starts this on load, but a view opened
-before initialization finishes waits for the exact order. No partial map is shown and no later background
-initialization reorders visible cards. This deliberately preserves exact startup rather than labelling a saved,
-unverified order as current.
+claim of exact instantaneous change detection. A new runtime validates the complete history in the background,
+bracketed by ID checks. Initialization reads at most four 100-item pages concurrently, draining the batch on failure
+or invalidation before retrying; it never increases the page size.
+
+`snapshot({ retry?: boolean })` waits only for `readMemory`, not for history validation. It returns a defensive
+`lastBrewed` map and `CoffeeHistoryStatus`: `source` (`saved`, `current`, `none`), `stale`, `refreshing`, `savedAt`
+(the persisted index's timestamp, or null), `cache` (`missing`, `invalid`, or null), and an explicit `error` code
+(or null). `readMemory`/`writeMemory` are an optional pair; the exported `CoffeeHistoryData` is version 1 with
+`savedAt` and `entries: { shotId, coffeeId, brewedAt }[]`. Only derived identity and brew times are persisted.
+Malformed data is reported as `cache: "invalid"`/`error: "invalidData"` and rebuilt, never trusted. A failed memory
+read is explicit and can be retried by rebuilding. Successful complete validation replaces the saved index.
+Persistence adapters **must use the same local host/instance as the shot adapters**, never a shared account or
+cross-machine store/key. Bean Journal reads only the local Decaid's shots and stores the index in that Decaid's
+own key-value store; separate tablets have independent stores even though the namespace/key is spelled the same.
+There is no cloud ordering, cross-machine history or visibility filter for never-used bags.
+Decaid limits a store POST to 1,048,576 JSON bytes. The 4,205-shot UUID fixture fits within that bound; oversized
+or failed writes remain explicit errors and never truncate history to make an index fit.
+
+Bean Journal opens immediately with saved brew order marked **refreshing**. Without a usable index it shows
+roast-date order with an explicit **building history** label, never a false exact last-brew order. A fresh shelf and
+workflow still put the selected unfinished bag first and finished bags last. Both Coffees and the picker show
+background failures, retain last-known cards and offer Retry. While refreshing they recheck status once a second;
+otherwise visible lists keep their 15-second refresh. Pointer gestures defer both the data replacement and card
+repainting until release and completion of the tap/hold action; scroll positions are preserved. The old-bags offer
+reuses the same complete index rather than launching a second full history scan.
 
 Concurrent reads share one operation, including retries. Invalidations during an operation discard its candidate,
 retrying at most three times before `coffeeHistoryChanged`. Failed pages/probes/identity lookups reject, preserve
-pending work and do not return a stale success or cache partial history; a subsequent call retries. `readShot` returns
-null only on confirmed absence, never on network errors. `lastBrewed()` returns a defensive map copy. Hosts must
-surface errors, reject reads after unload, and invalidate on unload/reload. Existing consumers must add the three
-new identity/membership adapters and pass IDs to event invalidation when updating their pinned core version.
+pending work and never cache partial history. `lastBrewed()` remains the strict, await-validation API: failures reject
+and a subsequent call retries. Nonblocking `snapshot()` instead returns last-known/fallback order with explicit
+stale/error status, never a success claiming fresh history. Background errors call `onError`, are exposed in status,
+and retry on explicit `snapshot({ retry: true })`, a new invalidation, or a later probe interval (not every status
+poll). Persistence failures are also explicit. `readShot` returns null only on confirmed absence, never network
+errors. Hosts must surface status/errors, reject reads after unload and invalidate on unload/reload. Existing
+consumers must add the identity/membership and persistence adapters, use `snapshot()` for nonblocking display, and
+pass IDs to event invalidation when updating their pinned core version.
+
+The shared `createPointerGuard({ isBusy, onIdle })` export owns gesture/idle timing for serialized clients.
+Use `hold(pointerId)` on pointerdown, `release(pointerId)` on pointerup/cancel, `clear()` on blur/hidden, and
+`active` to defer data/card replacement. `onIdle` runs after all pointers and their click/hold action finish;
+`dispose()` cancels scheduled work. Bean Journal passes this self-contained factory into its serialized client
+alongside the texts, so other plugins can reuse exactly the same guard instead of copying gesture mechanics.
+
+The `coffees` action returns `{ coffees, selectedId, history }` and accepts `retryHistory: true`; MCP's
+`list_coffees` keeps the same history metadata and exposes `retry_history`. Assistants must report stale/error status,
+not present saved or provisional ordering as freshly validated.
 
 ### Resting age and freezer intervals
 

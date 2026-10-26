@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCoffeeHistory, sortCoffees, type CoffeeHistoryOptions } from "./index";
+import { createCoffeeHistory, sortCoffees, type CoffeeHistoryData, type CoffeeHistoryOptions } from "./index";
 
 type Bag = { id: string; finished: boolean };
 type Shot = { id: string; bag: string | null; timestamp: number | null };
@@ -61,6 +61,131 @@ describe("coffee brew history", () => {
     (result as Map<string, number>).set("bag-0", 1);
     expect((await history.lastBrewed()).get("bag-0")).toBe(999);
     expect(readShots).toHaveBeenCalledTimes(3);
+  });
+
+  describe("saved coffee history snapshots", () => {
+    const saved = { version: 1, savedAt: 123, entries: [
+      { shotId: "s", coffeeId: "old", brewedAt: 1 }, { shotId: "clean", coffeeId: null, brewedAt: null },
+    ] };
+    it("returns saved ordering without waiting for validation and never calls it current before the full scan completes", async () => {
+      const gate = deferred<Shot[]>();
+      const writeMemory = vi.fn(async () => {});
+      const shots = [{ id: "s", bag: "new", timestamp: 2 }, { id: "clean", bag: null, timestamp: null }];
+      const { history, readShots } = setup(shots, { readMemory: async () => saved, writeMemory, readShots: () => gate.promise });
+      const snapshot = await history.snapshot();
+      expect([...snapshot.lastBrewed]).toEqual([["old", 1]]);
+      expect(snapshot.status).toMatchObject({ source: "saved", stale: true, refreshing: true, savedAt: 123, error: null });
+      expect(writeMemory).not.toHaveBeenCalled();
+      gate.resolve(shots);
+      expect([...await history.lastBrewed()]).toEqual([["new", 2]]);
+      expect((await history.snapshot()).status).toMatchObject({ source: "current", stale: false, refreshing: false });
+      expect(writeMemory).toHaveBeenCalledWith(expect.objectContaining({ version: 1, entries: [
+        { shotId: "s", coffeeId: "new", brewedAt: 2 }, { shotId: "clean", coffeeId: null, brewedAt: null },
+      ] }));
+      expect(readShots).not.toHaveBeenCalled();
+    });
+    it.each([null, { version: 99 }, { ...saved, entries: [saved.entries[0], saved.entries[0]] },
+      { ...saved, entries: [null] }])("marks missing or corrupt state explicitly and rebuilds it (%j)", async (memory) => {
+      const shots = [{ id: "s", bag: "new", timestamp: 2 }];
+      const onError = vi.fn(), writeMemory = vi.fn(async () => {});
+      const { history } = setup(shots, { readMemory: async () => memory, writeMemory, onError });
+      const snapshot = await history.snapshot();
+      expect(snapshot.lastBrewed.size).toBe(0);
+      expect(snapshot.status).toMatchObject({ source: "none", stale: true, refreshing: true,
+        cache: memory === null ? "missing" : "invalid", error: memory === null ? null : "invalidData" });
+      expect([...await history.lastBrewed()]).toEqual([["new", 2]]);
+      expect((await history.snapshot()).status.cache).toBe(null);
+      expect(onError).toHaveBeenCalledTimes(memory === null ? 0 : 1);
+    });
+    it("retains saved ordering on background failure, reports the error, and supports explicit retry without waiting for a TTL", async () => {
+      const onError = vi.fn();
+      const shots = [{ id: "s", bag: "new", timestamp: 2 }, { id: "clean", bag: null, timestamp: null }];
+      const readShots = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(shots);
+      const { history } = setup(shots, { readMemory: async () => saved, writeMemory: async () => {}, readShots, onError });
+      await history.snapshot();
+      await expect(history.lastBrewed()).rejects.toThrow("offline");
+      const failed = await history.snapshot();
+      expect([...failed.lastBrewed]).toEqual([["old", 1]]);
+      expect(failed.status).toMatchObject({ source: "saved", stale: true, refreshing: false, error: "offline" });
+      expect(readShots).toHaveBeenCalledTimes(1);
+      expect((await history.snapshot({ retry: true })).status.refreshing).toBe(true);
+      await history.lastBrewed();
+      expect((await history.snapshot()).status.error).toBe(null);
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+    it("surfaces memory read and write failures rather than claiming a saved/current success", async () => {
+      const shots = [{ id: "s", bag: "a", timestamp: 1 }];
+      const writeMemory = vi.fn().mockRejectedValueOnce(new Error("storageFailed")).mockResolvedValue(undefined);
+      const { history } = setup(shots, {
+        readMemory: async () => { throw new Error("network"); }, writeMemory,
+      });
+      const failedRead = await history.snapshot();
+      expect(failedRead.status).toMatchObject({ source: "none", stale: true, refreshing: false, error: "network" });
+      await expect(history.lastBrewed()).rejects.toThrow("storageFailed");
+      expect((await history.snapshot()).status).toMatchObject({ source: "none", stale: true, error: "storageFailed" });
+      await history.lastBrewed();
+      expect((await history.snapshot()).status).toMatchObject({ source: "current", stale: false, error: null });
+    });
+    it("does not persist unrelated edits and keeps invalidations that arrive during a save", async () => {
+      const shots = [{ id: "s", bag: "a", timestamp: 1 }];
+      const writeMemory = vi.fn(async () => {});
+      const { history } = setup(shots, { readMemory: async () => null, writeMemory });
+      await history.lastBrewed();
+      history.invalidate("s");
+      await history.lastBrewed();
+      expect(writeMemory).toHaveBeenCalledTimes(1);
+      const save = deferred<void>();
+      writeMemory.mockReturnValueOnce(save.promise);
+      shots[0].bag = "b";
+      history.invalidate("s");
+      const reading = history.lastBrewed();
+      await vi.waitFor(() => expect(writeMemory).toHaveBeenCalledTimes(2));
+      shots[0].bag = "c";
+      history.invalidate("s");
+      save.resolve();
+      expect([...await reading]).toEqual([["c", 1]]);
+      expect(writeMemory).toHaveBeenCalledTimes(3);
+    });
+    it("requires both persistence adapters together", () => {
+      expect(() => setup([], { readMemory: async () => null })).toThrow("invalidArguments");
+      expect(() => setup([], { writeMemory: async () => {} })).toThrow("invalidArguments");
+    });
+    it("keeps independent host stores and histories isolated even when their shot IDs overlap", async () => {
+      let memoryA: unknown = { ...saved, entries: [{ shotId: "s", coffeeId: "bag-a", brewedAt: 1 }] };
+      let memoryB: unknown = { ...saved, entries: [{ shotId: "s", coffeeId: "bag-b", brewedAt: 2 }] };
+      const a = setup([{ id: "s", bag: "bag-a", timestamp: 1 }], {
+        readMemory: async () => memoryA, writeMemory: async (data) => { memoryA = data; },
+      });
+      const b = setup([{ id: "s", bag: "bag-b", timestamp: 2 }], {
+        readMemory: async () => memoryB, writeMemory: async (data) => { memoryB = data; },
+      });
+      expect([...await a.history.snapshot().then((s) => s.lastBrewed)]).toEqual([["bag-a", 1]]);
+      expect([...await b.history.snapshot().then((s) => s.lastBrewed)]).toEqual([["bag-b", 2]]);
+      await Promise.all([a.history.lastBrewed(), b.history.lastBrewed()]);
+      expect(memoryA).toMatchObject({ entries: [{ shotId: "s", coffeeId: "bag-a", brewedAt: 1 }] });
+      expect(memoryB).toMatchObject({ entries: [{ shotId: "s", coffeeId: "bag-b", brewedAt: 2 }] });
+    });
+    it("fits 4,205 UUID shots in the real 1 MiB store limit and surfaces oversized writes without truncation", async () => {
+      const uuid = (n: number) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-000000000001`;
+      const shots = (count: number) => Array.from({ length: count }, (_, i) => ({
+        id: uuid(i), bag: uuid(20000 + i % 40), timestamp: 1700000000000 + i * 1000,
+      }));
+      let bytes = 0;
+      const writeMemory = vi.fn(async (data: CoffeeHistoryData) => {
+        bytes = Buffer.byteLength(JSON.stringify(data), "utf8");
+        if (bytes > 1048576) throw Object.assign(new Error("requestFailed"), { status: 413 });
+      });
+      const normal = setup(shots(4205), { readMemory: async () => null, writeMemory });
+      await normal.history.lastBrewed();
+      expect(bytes).toBeLessThanOrEqual(1048576);
+      expect(writeMemory.mock.lastCall![0].entries).toHaveLength(4205);
+      console.info(`4,205-shot UUID history envelope: ${bytes} UTF-8 bytes (limit 1,048,576)`);
+      const oversized = setup(shots(10000), { readMemory: async () => saved, writeMemory });
+      await expect(oversized.history.lastBrewed()).rejects.toMatchObject({ message: "requestFailed", status: 413 });
+      expect(bytes).toBeGreaterThan(1048576);
+      expect(writeMemory.mock.lastCall![0].entries).toHaveLength(10000);
+      expect((await oversized.history.snapshot()).status).toMatchObject({ source: "saved", stale: true, error: "requestFailed" });
+    });
   });
   it("updates only the changed shot, reveals older uses, and probes silent deletions without expiring history", async () => {
     vi.useFakeTimers();

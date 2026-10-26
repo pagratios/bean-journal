@@ -107,6 +107,8 @@ describe("MCP messages", () => {
     expect(act).toHaveBeenLastCalledWith("shots", { action: "shots", filter: { coffeeName: undefined, coffeeRoaster: undefined, profileTitle: "Bloom" } });
     await mcpMessage(call("list_coffees", { include_finished: true }), context({ act }));
     expect(act).toHaveBeenLastCalledWith("coffees", { action: "coffees", includeFinished: true });
+    await mcpMessage(call("list_coffees", { retry_history: true }), context({ act }));
+    expect(act).toHaveBeenLastCalledWith("coffees", { action: "coffees", includeFinished: false, retryHistory: true });
     await mcpMessage(call("get_dial_in_context", { coffee_id: "c1" }), context({ act }));
     expect(act).toHaveBeenLastCalledWith("dial-in", { action: "dial-in", coffeeId: "c1" });
     for (const [name, action] of [["get_status", "status"], ["list_equipment", "equipment"], ["get_preferences", "preferences"], ["get_refractometer", "refractometer"]]) {
