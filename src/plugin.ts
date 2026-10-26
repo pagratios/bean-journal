@@ -28,6 +28,7 @@ const WATERS_MAX = 20;
 const PHOTOS = "/store/beanJournal-photos";
 const WATERS = "/store/beanJournal/waters";
 const RATIOS = "/store/beanJournal/ratioMemory";
+const COFFEE_HISTORY = "/store/beanJournal/coffeeHistory";
 // Old bags are offered for finishing once: this says it was.
 const OLD_BAGS = "/store/beanJournal/oldBags";
 const OLD_DAYS = 91;
@@ -110,7 +111,10 @@ export function createPlugin(host: Host) {
       return answer;
     } finally {
       if (writesShelf) forgetShelf();
-      if (method !== "GET" && /^\/shots(?:[/?]|$)/.test(path)) coffeeHistory.invalidate();
+      if (method !== "GET" && /^\/shots(?:[/?]|$)/.test(path)) {
+        const id = /^\/shots\/([^/?]+)$/.exec(path)?.[1];
+        coffeeHistory.invalidate(id ? decodeURIComponent(id) : undefined);
+      }
     }
   }
   const enc = encodeURIComponent;
@@ -300,16 +304,10 @@ export function createPlugin(host: Host) {
     // The page asks each time it lists coffees until the user answers: the shots aren't read every time.
     if (oldMemo && Date.now() - oldMemo.at < 600000) return { asked: false, bags: oldMemo.bags };
     const since = today(new Date(Date.now() - OLD_DAYS * 86400000));
-    const recent: RecentShot[] = [];
-    for (let at = 0, done = false; at < 50 && !done; at++) {
-      const list = items(object(await local(`/shots?limit=100&offset=${at * 100}&order=desc`)).items);
-      for (const s of list) {
-        if (text(s.timestamp).slice(0, 10) < since) { done = true; break; }
-        const context = optionalObject(optionalObject(s.workflow).context);
-        recent.push({ batchId: text(context.beanBatchId) || null, roaster: text(context.coffeeRoaster), name: text(context.coffeeName) });
-      }
-      if (list.length < 100) done = true;
-    }
+    // Reuse the complete brew index; opening Coffees must not launch a second history scan for this offer.
+    const history = await coffeeHistory.lastBrewed();
+    const recent: RecentShot[] = [...history].filter(([, at]) => new Date(at).toISOString().slice(0, 10) >= since)
+      .map(([batchId]) => ({ batchId, roaster: "", name: "" }));
     // The next shot's coffee is in use, whatever its dates say.
     let next = "";
     try { next = text(optionalObject(object(await local("/workflow")).context).beanBatchId); } catch { /* no workflow yet */ }
@@ -735,17 +733,38 @@ export function createPlugin(host: Host) {
   }
   const coffeeHistory = createCoffeeHistory<ObjectData>({
     readShots: async (offset, limit) => items(object(await local(`/shots?limit=${limit}&offset=${offset}&order=desc`)).items),
+    readShotIds: async () => {
+      const ids = await local("/shots/ids");
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id)) throw new Error("invalidData");
+      return ids;
+    },
+    readShot: async (id) => {
+      try { return object(await local(`/shots/${enc(id)}`)); }
+      catch (error) {
+        if (error instanceof Error && error.message === "notFound") return null;
+        throw error;
+      }
+    },
+    shotId: (shot) => text(shot.id),
     coffeeId: (shot) => text(optionalObject(optionalObject(shot.workflow).context).beanBatchId) || null,
     brewedAt: (shot) => isBrew(shotKind(optionalObject(optionalObject(shot.workflow).profile))) ? Date.parse(text(shot.timestamp)) : null,
+    readMemory: async () => {
+      try { return await local(COFFEE_HISTORY); }
+      catch (error) {
+        if (error instanceof Error && error.message === "notFound") return null;
+        throw error;
+      }
+    },
+    writeMemory: async (data) => { await local(COFFEE_HISTORY, "POST", data); },
+    onError: log("coffee history"),
   });
-  async function orderedCoffees() {
-    const [s, lastBrewed] = await Promise.all([readShelf(), coffeeHistory.lastBrewed()]);
-    // Read selection after the history scan: it may have changed while the tablet read older pages.
+  async function orderedCoffees(retry: boolean) {
+    const [s, history] = await Promise.all([readShelf(), coffeeHistory.snapshot({ retry })]);
     const workflow = object(await local("/workflow"));
-    return sortCoffees(s.coffees, {
+    return { history: history.status, selectedId: text(optionalObject(workflow.context).beanBatchId) || null, coffees: sortCoffees(s.coffees, {
       coffeeId: (coffee) => coffee.id, isFinished: (coffee) => coffee.finished,
-      selectedId: text(optionalObject(workflow.context).beanBatchId) || null, lastBrewed,
-    });
+      selectedId: text(optionalObject(workflow.context).beanBatchId) || null, lastBrewed: history.lastBrewed,
+    }) };
   }
   /** A coffee's newest brew and its best rated one (the newest of equals). */
   function lastAndBest(shots: ShotLine[]) {
@@ -1153,9 +1172,9 @@ export function createPlugin(host: Host) {
     switch (b.action) {
       case "status": return status();
       case "coffees": {
-        const coffees = await orderedCoffees();
+        const value = await orderedCoffees(b.retryHistory === true);
         const search = text(b.search).slice(0, 120);
-        return { coffees: coffees.filter((c) => (b.includeFinished === true || !c.finished) && matchesSearch(c, search)) };
+        return { ...value, coffees: value.coffees.filter((c) => (b.includeFinished === true || !c.finished) && matchesSearch(c, search)) };
       }
       case "coffee": return coffeeDetail(b.id);
       case "save-coffee": return serial(() => saveCoffee(b));
@@ -1323,7 +1342,9 @@ export function createPlugin(host: Host) {
       config = settings ?? {};
       stopped = false;
       latestMemo.clear();
+      forgetShelf();
       coffeeHistory.invalidate();
+      coffeeHistory.snapshot().catch(log("coffee history"));
       // keepBrewTemp compares with the workflow as it was; a clean-up from before the start is undone.
       local("/workflow").then((w) => { seenWorkflow ??= object(w); }).catch(log("workflow"));
       ratioMemory.follow().catch(log("ratio memory"));
@@ -1348,7 +1369,9 @@ export function createPlugin(host: Host) {
           keepBrewTempSoon();
         } else if (event.name === "shotStored" || event.name === "shotUpdated") {
           latestMemo.clear();
-          coffeeHistory.invalidate();
+          const payload = optionalObject(event.payload);
+          const changedId = text(payload.id ?? payload.shotId);
+          coffeeHistory.invalidate(changedId || undefined);
           if (event.name === "shotStored") {
             const p = optionalObject(event.payload);
             const id = localId(p.id ?? p.shotId);

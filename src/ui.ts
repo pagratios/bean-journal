@@ -1,4 +1,5 @@
 import type { Copy } from "./i18n";
+import { createPointerGuard } from "./core/pointer-guard";
 
 export type { Copy };
 declare const __DECAID_COPY__: Copy;
@@ -8,7 +9,7 @@ export function copy(): Copy {
 }
 
 // Serialized into the page: browser helpers must remain inside this function.
-function client(t: Copy) {
+function client(t: Copy, makePointerGuard: typeof createPointerGuard) {
   type Data = Record<string, unknown>;
   type Coffee = {
     id: string; beanId: string; batchId: string | null; roaster: string; name: string;
@@ -599,7 +600,7 @@ function client(t: Copy) {
     const previous = nextId();
     try { status = await api("status"); } catch (e) { if (!quiet) say(e instanceof Error ? e.message : t.failed, "error"); }
     renderNext();
-    if (coffeesLoaded && previous !== nextId()) await refreshCoffeeLists();
+    if (coffeesLoaded && previous !== nextId() && (coffeeSelectedId ?? "") !== nextId()) await refreshCoffeeLists();
   }
   function renderNext() {
     const box = $("next-coffee");
@@ -1308,6 +1309,7 @@ function client(t: Copy) {
     ], "");
   }
   function renderPicker() {
+    if (coffeeTouch.active) { coffeePaintPending = true; return; }
     const box = $("picker-list");
     box.replaceChildren();
     const query = ($("picker-search") as HTMLInputElement).value;
@@ -1317,7 +1319,11 @@ function client(t: Copy) {
     for (const c of withFinishedLast(shown)) box.append(cardFor(c, true));
   }
   // The server orders by brew history. Promote only the current unfinished bag, keeping that history order.
-  const withFinishedLast = (all: Coffee[]) => [...nextFirst(all.filter((c) => !c.finished)), ...all.filter((c) => c.finished)];
+  const withFinishedLast = (all: Coffee[]) => {
+    const id = coffeeSelectedId === undefined ? nextId() : coffeeSelectedId;
+    return [...all.filter((c) => !c.finished && c.id === id), ...all.filter((c) => !c.finished && c.id !== id),
+      ...all.filter((c) => c.finished)];
+  };
   // What choosing did, in words: the settings it kept, or the shot whose settings came with it.
   function chosenSaid(c: Coffee, how: string, value: Data) {
     if (how === "keep") return t.coffeeSet.replace("{name}", c.name);
@@ -1391,19 +1397,78 @@ function client(t: Copy) {
     };
   }
   let coffeeRead = 0;
-  async function ensureCoffees(force = false) {
-    if (coffeesLoaded && !force) return;
-    const reading = ++coffeeRead;
-    const value = await api("coffees", { includeFinished: showFinished });
-    if (reading !== coffeeRead) return;
+  let coffeeSelectedId: string | null | undefined;
+  let coffeeHistoryState: Data = {};
+  let historyTimer: ReturnType<typeof setTimeout> | undefined;
+  const coffeeTouch = makePointerGuard({ isBusy: () => busy, onIdle: flushCoffeePaint });
+  let deferredCoffee: Data | null = null;
+  let coffeePaintPending = false;
+  function renderHistoryStatus() {
+    const h = coffeeHistoryState, code = str(h.error);
+    const why = t.errors[code as keyof typeof t.errors] ?? t.failed;
+    const fallback = h.source === "none" ? t.coffeeOrderFallback : t.coffeeOrderSaved;
+    let message = "";
+    if (code) message = `${h.cache === "invalid" ? `${t.coffeeOrderInvalid} ` : ""}${t.coffeeOrderError.replace("{why}", why)} ${fallback}`;
+    else if (h.source === "none") message = t.coffeeOrderBuilding;
+    else if (h.stale || h.refreshing) message = h.source === "saved" ? t.coffeeOrderRefreshing : t.coffeeOrderUpdating;
+    if (code && h.refreshing) message += ` ${t.coffeeOrderUpdating}`;
+    for (const id of ["coffee-history", "picker-history"]) {
+      const box = $(id);
+      box.hidden = !message;
+      box.className = `coffee-history${code ? " error" : ""}`;
+      box.replaceChildren(el("span", "", message));
+      if (code && !h.refreshing) {
+        const retry = el("button", "secondary small", t.coffeeOrderRetry) as HTMLButtonElement;
+        retry.onclick = () => { void refreshCoffeeLists(true); };
+        box.append(retry);
+      }
+    }
+    clearTimeout(historyTimer);
+    if (h.refreshing || h.stale && !code) historyTimer = setTimeout(function pollHistory() {
+      if (document.hidden || ($("view-coffees").hidden && !($("picker") as HTMLDialogElement).open)) return;
+      if (busy || coffeeTouch.active) { historyTimer = setTimeout(pollHistory, 1000); return; }
+      void refreshCoffeeLists();
+    }, 1000);
+  }
+  function applyCoffees(value: Data) {
     coffees = list(value.coffees).map(asCoffee).filter((c) => c.id);
+    coffeeSelectedId = value.selectedId === null ? null : typeof value.selectedId === "string" ? value.selectedId : undefined;
+    coffeeHistoryState = value.history && typeof value.history === "object" ? value.history as Data : {};
     coffeesLoaded = true;
     renderFilters();
-    void offerOldBags();
+    renderHistoryStatus();
+    if (!coffeeHistoryState.stale) void offerOldBags();
   }
-  async function refreshCoffeeLists() {
+  function flushCoffeePaint() {
+    if (deferredCoffee) { const value = deferredCoffee; deferredCoffee = null; applyCoffees(value); }
+    if (coffeePaintPending) {
+      coffeePaintPending = false;
+      const gridTop = $("grid").scrollTop, pickerTop = $("picker-list").scrollTop;
+      renderCoffees();
+      if (($("picker") as HTMLDialogElement).open) renderPicker();
+      $("grid").scrollTop = gridTop;
+      $("picker-list").scrollTop = pickerTop;
+    }
+  }
+  document.addEventListener("pointerdown", (event) => {
+    if (event.target instanceof Element && event.target.closest("#grid,#picker-list,.coffee-history")) coffeeTouch.hold(event.pointerId);
+  }, true);
+  for (const type of ["pointerup", "pointercancel"] as const) document.addEventListener(type, (event) => {
+    coffeeTouch.release(event.pointerId);
+  }, true);
+  window.addEventListener("blur", () => coffeeTouch.clear());
+  async function ensureCoffees(force = false, retry = false) {
+    if (coffeesLoaded && !force) return;
+    const reading = ++coffeeRead;
+    const value = await api("coffees", { includeFinished: showFinished, ...(retry ? { retryHistory: true } : {}) });
+    if (reading !== coffeeRead) return;
+    if (coffeeTouch.active) { deferredCoffee = value; coffeePaintPending = true; return; }
+    deferredCoffee = null;
+    applyCoffees(value);
+  }
+  async function refreshCoffeeLists(retry = false) {
     try {
-      await ensureCoffees(true);
+      await ensureCoffees(true, retry);
       const gridTop = $("grid").scrollTop, pickerTop = $("picker-list").scrollTop;
       renderCoffees();
       if (($("picker") as HTMLDialogElement).open) renderPicker();
@@ -1574,10 +1639,15 @@ function client(t: Copy) {
   }
   async function loadCoffees(force = false) {
     const grid = $("grid");
-    if (!coffeesLoaded || force) grid.replaceChildren(el("p", "muted", t.loading));
-    try { await ensureCoffees(force); renderCoffees(); } catch (e) { grid.replaceChildren(el("p", "notice error", e instanceof Error ? e.message : t.failed)); }
+    if (!coffeesLoaded && !coffeeTouch.active) grid.replaceChildren(el("p", "muted", t.loading));
+    try { await ensureCoffees(force); renderCoffees(); } catch (e) {
+      const message = e instanceof Error ? e.message : t.failed;
+      if (coffeesLoaded || coffeeTouch.active) say(message, "error");
+      else grid.replaceChildren(el("p", "notice error", message));
+    }
   }
   function renderCoffees() {
+    if (coffeeTouch.active) { coffeePaintPending = true; return; }
     if (detail) return;
     const grid = $("grid");
     grid.replaceChildren();
@@ -2494,7 +2564,7 @@ function client(t: Copy) {
   toParent({ type: "streamline:ready" });
   // Pages opened from the skin refresh when the tablet comes back to them.
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
+    if (document.hidden) { coffeeTouch.clear(); return; }
     grindersAt = watersAt = 0;
     void refreshStatus(true);
     if (!$("view-coffees").hidden || ($("picker") as HTMLDialogElement).open) void refreshCoffeeLists();
@@ -2526,11 +2596,9 @@ function client(t: Copy) {
   // Other apps can reassign/delete shots without a usable event. Refresh both views while they are visible.
   setInterval(() => {
     if (document.hidden || busy || ($("view-coffees").hidden && !($("picker") as HTMLDialogElement).open)) return;
-    void refreshStatus(true).then(refreshCoffeeLists);
+    void refreshStatus(true).then(() => refreshCoffeeLists());
   }, 15000);
-  // Alone in the skin's overlay the gear card starts at once, and the page behind it (never shown) isn't loaded.
-  if (document.documentElement.classList.contains("gear-only")) { gearOnly = true; void run(openNextGear); }
-  else void refreshStatus().then(() => {
+  function startPage() {
     const wanted = params.get("view");
     const id = params.get("id");
     if (wanted === "coffee" && id) {
@@ -2543,7 +2611,11 @@ function client(t: Copy) {
     show(views.includes(wanted as View) ? wanted as View : "shot");
     if (wanted === "pick") { pickOnly = true; void run(async () => { await openPicker("next"); }); }
     if (wanted === "next") { gearOnly = true; void run(openNextGear); }
-  });
+  }
+  // Coffee responses carry fresh selection themselves; do not serialize their first paint behind status/shot reads.
+  if (document.documentElement.classList.contains("gear-only")) { gearOnly = true; void run(openNextGear); }
+  else if (params.get("view") === "coffees" || params.get("view") === "pick") { startPage(); void refreshStatus(); }
+  else void refreshStatus().then(startPage);
 }
 
 export function page(): string {
@@ -2672,6 +2744,7 @@ button.attention{box-shadow:0 0 0 0.2rem var(--bg),0 0 0 0.367rem var(--accent)}
    a fixed height would shrink and clip their lines). */
 #view-coffees{display:flex;flex-direction:column;padding:0.667rem 0.933rem 0}#coffee-list{flex:1;min-height:0;display:flex;flex-direction:column}
 #grid,#picker-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(15.333rem,1fr));grid-auto-rows:max-content;align-content:start;gap:0.8rem;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-bottom:0.8rem}
+.coffee-history{display:flex;align-items:center;gap:0.667rem;flex:none;padding:0.4rem 0;font-size:0.867rem;color:var(--muted)}.coffee-history.error{color:var(--warn-ink)}.coffee-history span{flex:1}.coffee-history button{flex:none}
 /* Cards are flat on the skin's surface; only the current coffee gets a line; finished ones are greyed. */
 .card{display:flex;flex-direction:row;align-items:center;gap:0.667rem;padding:0.533rem;text-align:left;background:var(--surface);color:var(--ink);border:2px solid transparent;border-radius:0.8rem;overflow:hidden;font-weight:400;white-space:normal;min-height:0}
 .card.current{background:var(--ok-soft);box-shadow:inset 0 0 0 1px var(--ok)}.card.finished{opacity:.55;background:var(--surface-2)}.card.finished .photo{filter:grayscale(1)}.card.finished .stock-bar i{background:var(--muted)!important}
@@ -2758,7 +2831,7 @@ html.gear-only,html.gear-only body{background:transparent!important;color-scheme
 <div class="shot-bar"><button type="button" id="older" class="secondary small">← ${esc(t.older)}</button><button type="button" id="newer" class="secondary small">${esc(t.newer)} →</button><button type="button" id="latest" class="secondary small">${esc(t.latest)}</button><button type="button" id="newer-shot" class="small" hidden>${esc(t.newerShot)} →</button><button type="button" id="load-this" class="secondary small" title="${esc(t.loadThisTitle)}" hidden>${esc(t.loadThis)}</button><select id="shot-set" aria-label="${esc(t.shotSet)}"><option value="all">${esc(t.setAll)}</option><option value="coffee">${esc(t.setCoffee)}</option><option value="profile">${esc(t.setProfile)}</option><option value="both">${esc(t.setBoth)}</option></select></div>
 <div id="shot-body"></div>
 </section><section id="view-coffees" hidden>
-<div id="coffee-list"><div class="toolbar"><div id="coffee-filters" class="filters"></div><input id="search" type="search" placeholder="${esc(t.searchPlaceholder)}" aria-label="${esc(t.searchPlaceholder)}"><button type="button" id="coffee-clear" class="secondary clear-filters" hidden>${esc(t.clearFilters)}</button><label class="switch finished"><input type="checkbox" class="sw" id="show-finished"> ${esc(t.showFinished)}</label><button type="button" id="add-coffee">+ ${esc(t.addCoffee)}</button></div><div id="grid"></div></div>
+<div id="coffee-list"><div class="toolbar"><div id="coffee-filters" class="filters"></div><input id="search" type="search" placeholder="${esc(t.searchPlaceholder)}" aria-label="${esc(t.searchPlaceholder)}"><button type="button" id="coffee-clear" class="secondary clear-filters" hidden>${esc(t.clearFilters)}</button><label class="switch finished"><input type="checkbox" class="sw" id="show-finished"> ${esc(t.showFinished)}</label><button type="button" id="add-coffee">+ ${esc(t.addCoffee)}</button></div><div id="coffee-history" class="coffee-history" role="status" aria-live="polite" hidden></div><div id="grid"></div></div>
 <div id="coffee-detail" hidden></div>
 </section>
 <section id="view-settings" hidden><div class="settings">
@@ -2809,8 +2882,8 @@ html.gear-only,html.gear-only body{background:transparent!important;color-scheme
 <span class="set-control"><button type="button" id="mcp-copy-serve" class="secondary small">${esc(t.mcpCopy)}</button></span></div>
 </div>
 </div></div></section>
-<dialog id="picker"><div class="dialog-head"><h2>${esc(t.chooseCoffee)}</h2><label class="switch finished"><input type="checkbox" class="sw" id="picker-finished"> ${esc(t.showFinished)}</label><button type="button" id="picker-add" class="secondary">+ ${esc(t.addCoffee)}</button><button type="button" id="picker-close" class="secondary">${esc(t.close)}</button></div><div class="toolbar"><div id="picker-filters" class="filters"></div><input id="picker-search" type="search" placeholder="${esc(t.searchPlaceholder)}" aria-label="${esc(t.searchPlaceholder)}"><button type="button" id="picker-clear" class="secondary clear-filters" hidden>${esc(t.clearFilters)}</button><span id="picker-hint" class="muted">${esc(t.pickerHint)}</span></div><div id="picker-list"></div></dialog>
+<dialog id="picker"><div class="dialog-head"><h2>${esc(t.chooseCoffee)}</h2><label class="switch finished"><input type="checkbox" class="sw" id="picker-finished"> ${esc(t.showFinished)}</label><button type="button" id="picker-add" class="secondary">+ ${esc(t.addCoffee)}</button><button type="button" id="picker-close" class="secondary">${esc(t.close)}</button></div><div class="toolbar"><div id="picker-filters" class="filters"></div><input id="picker-search" type="search" placeholder="${esc(t.searchPlaceholder)}" aria-label="${esc(t.searchPlaceholder)}"><button type="button" id="picker-clear" class="secondary clear-filters" hidden>${esc(t.clearFilters)}</button><span id="picker-hint" class="muted">${esc(t.pickerHint)}</span></div><div id="picker-history" class="coffee-history" role="status" aria-live="polite" hidden></div><div id="picker-list"></div></dialog>
 </main>
 <footer id="actions" hidden><span id="unsaved-note" class="pill unsaved" role="status" hidden>${esc(t.unsaved)}</span><button type="button" id="act-cancel" class="secondary">${esc(t.cancel)}</button><button type="button" id="act-back" class="secondary" hidden>← ${esc(t.back)}</button><button type="button" id="act-done">${esc(t.done)}</button></footer>
-<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")});</script></body></html>`;
+<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()});</script></body></html>`;
 }

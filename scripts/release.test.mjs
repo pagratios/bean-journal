@@ -132,7 +132,8 @@ describe("a release from start to tag", () => {
     await rm(join(repo, "src/other.ts"));
     await expect(prepare(repo, "minor", quiet)).rejects.toThrow(/## 0\.2\.0/);
     let opened;
-    const patch = await prepare(repo, "patch", { ...quiet, openPullRequest: (_, pr) => (opened = pr, "url") });
+    const patch = await prepare(repo, "patch", { ...quiet, coAuthor: "Release Helper <release@example.test>",
+      openPullRequest: (_, pr) => (opened = pr, "url") });
     expect(patch.version.name).toBe("0.1.1");
     expect(opened).toMatchObject({ branch: "release/0.1.1", title: "Release 0.1.1" });
     expect(opened.body).toMatch(/node scripts\/release.mjs tag/);
@@ -141,6 +142,7 @@ describe("a release from start to tag", () => {
     expect(git(repo, "show", "origin/release/0.1.1:src/plugin.ts")).toBe(plugin("0.1.1").trim());
     expect(git(repo, "show", "origin/release/0.1.1:package.json")).toBe(pkg("0.1.1").trim());
     expect(git(repo, "show", "origin/release/0.1.1:package-lock.json")).toBe(lock("0.1.1").trim());
+    expect(git(repo, "log", "-1", "--format=%B", "origin/release/0.1.1")).toContain("Co-authored-by: Release Helper <release@example.test>");
     expect(await readFile(join(repo, "src/plugin.ts"), "utf8")).toBe(plugin("0.1.0"));
 
     // Squash-merged, then another change lands before the tag: the tag goes on the release.

@@ -5,6 +5,7 @@ import { runInNewContext } from "node:vm";
 import { transformSync } from "esbuild";
 import { texts } from "./i18n";
 import { page } from "./ui";
+import { createPointerGuard } from "./core";
 
 const source = readFileSync(resolve("src", "ui.ts"), "utf8");
 const theme = readFileSync(resolve("src", "core", "theme.css"), "utf8");
@@ -114,7 +115,8 @@ describe("coffee list refreshes", () => {
   const code = transformSync(`function coffeeClient() {
     let coffees = [], coffeesLoaded = false, status = {}, showFinished = false;
     const list = (v) => v, asCoffee = (v) => v, str = (v) => typeof v === "string" ? v : "";
-    const $ = (id) => elements[id], say = report, t = { failed: "Failed" };
+    const $ = (id) => elements[id], say = report, t = texts, busy = false;
+    const el = (tag, className, text) => ({ tag, className, text });
     const renderNext = () => {}, renderFilters = () => {}, offerOldBags = () => {};
     const renderCoffees = () => { elements.grid.scrollTop = 0; rendered.grid = withFinishedLast(coffees).map((c) => c.id); };
     const renderPicker = () => { elements["picker-list"].scrollTop = 0; rendered.picker = withFinishedLast(coffees).map((c) => c.id); };
@@ -125,14 +127,23 @@ describe("coffee list refreshes", () => {
     return { refreshStatus, refreshCoffeeLists, ensureCoffees, ids: () => coffees.map((c) => c.id) };
   }`, { loader: "ts" }).code;
   function setupCoffeeClient() {
-    const elements = { grid: { scrollTop: 120 }, "picker-list": { scrollTop: 240 }, picker: { open: true } };
+    const status = () => ({ hidden: true, className: "", children: [] as { text: string; onclick?: () => void }[],
+      replaceChildren(...children: { text: string }[]) { this.children = children; },
+      append(child: { text: string }) { this.children.push(child); } });
+    const elements = { grid: { scrollTop: 120 }, "picker-list": { scrollTop: 240 }, picker: { open: true },
+      "view-coffees": { hidden: false }, "coffee-history": status(), "picker-history": status() };
     const rendered = { grid: [] as string[], picker: [] as string[] };
     const report = vi.fn(), api = vi.fn();
-    const client = runInNewContext(`${code}; coffeeClient()`, { elements, rendered, report, api, Error }) as {
+    const events = new Map<string, (event: unknown) => void>();
+    class Target { closest() { return true; } }
+    const client = runInNewContext(`${code}; coffeeClient()`, { elements, rendered, report, api, Error, texts, makePointerGuard: createPointerGuard,
+      setTimeout, clearTimeout, Element: Target, window: { addEventListener: (name: string, fn: (e: unknown) => void) => events.set(name, fn) },
+      document: { hidden: false, addEventListener: (name: string, fn: (e: unknown) => void) => events.set(name, fn) },
+    }) as {
       refreshStatus: () => Promise<void>; refreshCoffeeLists: () => Promise<void>; ensureCoffees: (force?: boolean) => Promise<void>;
       ids: () => string[];
     };
-    return { client, api, elements, rendered, report };
+    return { client, api, elements, rendered, report, events, Target };
   }
   const coffees = ["new", "old", "done"].map((id) => ({ id, finished: id === "done" }));
 
@@ -171,7 +182,63 @@ describe("coffee list refreshes", () => {
     expect(t.rendered.grid).toEqual(["new", "old", "done"]);
     expect(source).toContain('if (view === "coffees") void loadCoffees(true)');
     expect(source).toContain('await ensureCoffees(true);\n    // Each time a fresh list');
-    expect(source).toContain('void refreshStatus(true).then(refreshCoffeeLists)');
+    expect(source).toContain('void refreshStatus(true).then(() => refreshCoffeeLists())');
+  });
+  it("labels saved, missing and failed history and exposes retry without hiding the coffee cards", async () => {
+    const t = setupCoffeeClient();
+    t.api.mockResolvedValueOnce({ coffees, history: { source: "saved", stale: true, refreshing: true } });
+    await t.client.refreshCoffeeLists();
+    expect(t.elements["coffee-history"].children[0].text).toBe(texts.coffeeOrderRefreshing);
+    expect(t.rendered.grid).toEqual(["new", "old", "done"]);
+    t.api.mockResolvedValueOnce({ coffees, history: { source: "none", stale: true, refreshing: true, cache: "missing" } });
+    await t.client.refreshCoffeeLists();
+    expect(t.elements["coffee-history"].children[0].text).toBe(texts.coffeeOrderBuilding);
+    t.api.mockResolvedValueOnce({ coffees, history: { source: "none", stale: true, refreshing: true,
+      cache: "invalid", error: "invalidData" } });
+    await t.client.refreshCoffeeLists();
+    expect(t.elements["coffee-history"].children[0].text).toContain(texts.coffeeOrderInvalid);
+    expect(t.elements["coffee-history"].children[0].text).toContain(texts.coffeeOrderFallback);
+    t.api.mockResolvedValueOnce({ coffees, history: { source: "none", stale: true, refreshing: false, error: "network" } });
+    await t.client.refreshCoffeeLists();
+    expect(t.elements["coffee-history"].children[0].text).toContain(texts.coffeeOrderFallback);
+    expect(t.elements["coffee-history"].children[1].text).toBe(texts.coffeeOrderRetry);
+    t.api.mockResolvedValueOnce({ coffees, history: { source: "current", stale: false, refreshing: false } });
+    t.elements["coffee-history"].children[1].onclick!();
+    await vi.waitFor(() => expect(t.elements["coffee-history"].hidden).toBe(true));
+    expect(t.api).toHaveBeenLastCalledWith("coffees", { includeFinished: false, retryHistory: true });
+  });
+  it("defers refreshed cards during an active touch and uses fresh selection/finished flags after release", async () => {
+    vi.useFakeTimers();
+    const t = setupCoffeeClient();
+    t.api.mockResolvedValueOnce({ coffees, selectedId: "old" });
+    await t.client.refreshCoffeeLists();
+    expect(t.rendered.grid).toEqual(["old", "new", "done"]);
+    t.events.get("pointerdown")!({ target: new t.Target(), pointerId: 1 });
+    const updated = [{ id: "new", finished: true }, { id: "done", finished: false }, { id: "old", finished: false }];
+    t.api.mockResolvedValueOnce({ coffees: updated, selectedId: "new" });
+    await t.client.refreshCoffeeLists();
+    expect(t.client.ids()).toEqual(["new", "old", "done"]);
+    expect(t.rendered.grid).toEqual(["old", "new", "done"]);
+    t.events.get("pointerup")!({ pointerId: 1 });
+    await vi.runOnlyPendingTimersAsync();
+    expect(t.rendered.grid).toEqual(["done", "old", "new"]);
+    expect(t.rendered.picker).toEqual(t.rendered.grid);
+    expect(t.elements.grid.scrollTop).toBe(120);
+  });
+});
+
+describe("nonblocking coffee page startup", () => {
+  const start = source.indexOf("  function startPage("), end = source.indexOf("\n}\n\nexport function page", start);
+  const boot = transformSync(source.slice(start, end), { loader: "ts" }).code;
+  it.each(["coffees", "pick"])("starts %s before an unresolved status request finishes", (view) => {
+    const calls: string[] = [];
+    runInNewContext(boot, {
+      params: new URLSearchParams(`?view=${view}`), views: ["shot", "coffees", "settings", "ai"],
+      show: (value: string) => calls.push(value), refreshStatus: () => new Promise(() => {}),
+      run: (fn: () => Promise<void>) => fn(), openPicker: async () => { calls.push("picker"); },
+      document: { documentElement: { classList: { contains: () => false } } },
+    });
+    expect(calls).toContain(view === "coffees" ? "coffees" : "picker");
   });
 });
 

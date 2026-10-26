@@ -104,7 +104,7 @@ function ghPullRequest(root, { branch, title, body }) {
     "--title", title, "--body", body], { cwd: root, encoding: "utf8" }).trim();
 }
 
-export async function prepare(root, bump, { log = console.log, openPullRequest = ghPullRequest } = {}) {
+export async function prepare(root, bump, { log = console.log, openPullRequest = ghPullRequest, coAuthor } = {}) {
   git(root, "fetch", "--quiet", "--tags", "origin", "main");
   const main = git(root, "rev-parse", "origin/main");
   if (git(root, "rev-parse", "HEAD") !== main) {
@@ -135,7 +135,7 @@ export async function prepare(root, bump, { log = console.log, openPullRequest =
     await writeFile(path, setPackageVersion(await readFile(path, "utf8"), version));
   }
   git(root, "add", "--", PLUGIN_FILE, ...PACKAGE_FILES, ...changed);
-  git(root, "commit", "--quiet", "-m", `Release ${version.name}`);
+  git(root, "commit", "--quiet", "-m", `Release ${version.name}`, ...(coAuthor ? ["--trailer", `Co-authored-by: ${coAuthor}`] : []));
   git(root, "push", "--quiet", "-u", "origin", branch);
   // Return to the starting point; an uncommitted section now lives on the release branch.
   git(root, "switch", "--quiet", ...(startBranch ? [startBranch] : ["--detach", main]));

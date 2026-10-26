@@ -32,14 +32,15 @@ function makeShot(id: string, ageSeconds: number, context: ObjectData = {}, anno
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach((f) => f()); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-type World = { beans?: ObjectData[]; batches?: ObjectData[]; phase?: string; slowWorkflow?: number; settingsStatus?: number; sensors?: ObjectData[]; workflowEvents?: boolean };
+type World = { beans?: ObjectData[]; batches?: ObjectData[]; shots?: ObjectData[]; latencyMs?: number;
+  phase?: string; slowWorkflow?: number; settingsStatus?: number; sensors?: ObjectData[]; workflowEvents?: boolean };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 function setup(settings: ObjectData = {}, world: World = {}) {
   vi.stubGlobal("__DECAID_COPY__", texts);
   vi.stubGlobal("__DECAID_THEME__", ":root{--bg:white}");
   let workflow: ObjectData = { profile, context: { targetDoseWeight: 18, targetYield: 36 } };
-  const shots = new Map<string, ObjectData>();
+  const shots = new Map<string, ObjectData>((world.shots ?? []).map((shot) => [String(shot.id), shot]));
   const store = new Map<string, unknown>();
   const beans: ObjectData[] = world.beans ?? [];
   const batches: ObjectData[] = world.batches ?? [];
@@ -55,6 +56,7 @@ function setup(settings: ObjectData = {}, world: World = {}) {
     const method = init.method || "GET";
     const body: unknown = init.body ? JSON.parse(String(init.body)) : null;
     calls.push({ url, method, body });
+    if (world.latencyMs) await new Promise((resolve) => setTimeout(resolve, world.latencyMs));
     if (!url.startsWith("http://localhost:8080/api/v1/")) throw new Error(`Outside Decaid: ${url}`);
     const path = url.slice("http://localhost:8080/api/v1".length);
     const [route, query = ""] = path.split("?");
@@ -140,6 +142,7 @@ function setup(settings: ObjectData = {}, world: World = {}) {
       }
       return json(grinders[i]);
     }
+    if (route === "/shots/ids") return json([...shots.keys()]);
     if (route === "/shots") {
       const batchIds = q.get("beanId") ? new Set(batches.filter((x) => x.beanId === q.get("beanId")).map((x) => x.id)) : null;
       const all = [...shots.values()].filter((s) => {
@@ -198,9 +201,18 @@ function setup(settings: ObjectData = {}, world: World = {}) {
     const res = await plugin.__httpRequestHandler({ endpoint: "control", method: "POST", body, headers: { ...headers, ...extra } });
     return { status: res.status, data: JSON.parse(res.body || "null") };
   };
+  const settled = async (body: ObjectData) => {
+    let res = await control(body);
+    for (let attempt = 0; attempt < 1000 && res.data.history?.refreshing; attempt++) {
+      res = await control({ ...body, retryHistory: false });
+    }
+    if (res.data.history?.refreshing) throw new Error("History did not settle");
+    return res;
+  };
   const ok = async (body: ObjectData) => {
-    const res = await control(body);
+    const res = body.action === "coffees" ? await settled({ ...body, retryHistory: true }) : await control(body);
     if (res.status !== 200) throw new Error(`${String(body.action)}: ${res.status} ${JSON.stringify(res.data)}`);
+    if (res.data.history?.error) throw new Error(String(res.data.history.error));
     return res.data;
   };
   const put = (patch: ObjectData) => fetch("http://localhost:8080/api/v1/workflow", { method: "PUT", body: JSON.stringify(patch) });
@@ -211,7 +223,7 @@ function setup(settings: ObjectData = {}, world: World = {}) {
     return JSON.parse(res.body);
   };
   const restart = () => { plugin.onUnload(); plugin = createPlugin(host); plugin.onLoad(settings); };
-  return { get plugin() { return plugin; }, control, ok, put, ratio, restart, calls, shots, store, beans, batches, emitted, workflow: () => workflow, context, settings, profiles };
+  return { get plugin() { return plugin; }, control, settled, ok, put, ratio, restart, calls, shots, store, beans, batches, emitted, workflow: () => workflow, context, settings, profiles };
 }
 
 const ratioWorld = (): World => ({
@@ -248,7 +260,10 @@ describe("Bean Journal plugin", () => {
     expect(await listing()).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
     expect(await listing({ includeFinished: false })).toEqual(["new", "tie", "old", "unseen"]);
     expect(await listing({ search: "same" })).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
-    expect(t.calls.filter((c) => c.url.includes("/shots?"))).toHaveLength(1);
+    const pages = t.calls.filter((c) => c.url.includes("/shots?")).length;
+    vi.setSystemTime(Date.now() + 15000);
+    expect(await listing()).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
+    expect(t.calls.filter((c) => c.url.includes("/shots?"))).toHaveLength(pages + 1);
   });
 
   it("refreshes new brews, edits, reassignments, confirmed deletions and missed-event changes", async () => {
@@ -293,16 +308,117 @@ describe("Bean Journal plugin", () => {
     expect(t.calls.some((c) => c.url.endsWith("/shots?limit=100&offset=100&order=desc"))).toBe(true);
   });
 
-  it("surfaces shot history read errors instead of returning a success-shaped unsorted shelf", async () => {
+  it("returns explicit failed history state rather than claiming a fallback shelf has current brew order", async () => {
     const t = setup({}, ratioWorld());
     const read = fetch;
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) =>
       url.includes("/shots?") ? json({ error: "Busy" }, 503) : read(url, init)));
-    const failed = await t.control({ action: "coffees" });
-    expect(failed.status).not.toBe(200);
-    expect(failed.data.code).toBe("requestFailed");
+    const failed = await t.settled({ action: "coffees" });
+    expect(failed.data.history).toMatchObject({ source: "none", stale: true, refreshing: false, error: "requestFailed" });
+    expect(failed.data.coffees).toHaveLength(3);
     vi.stubGlobal("fetch", read);
     expect((await t.ok({ action: "coffees" })).coffees.map((c: ObjectData) => c.id)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  it("keeps a 4,205-shot index across visible 15-second refresh periods and probes deletion errors explicitly", async () => {
+    vi.useFakeTimers();
+    const t = setup({}, ratioWorld());
+    for (let i = 0; i < 4205; i++) t.shots.set(`s${i}`, {
+      ...makeShot(`s${i}`, -i, { beanBatchId: i === 4204 ? "t3" : "t1" }), measurements: [],
+    });
+    const listing = async () => (await t.ok({ action: "coffees" })).coffees.map((c: ObjectData) => c.id);
+    expect(await listing()).toEqual(["t1", "t3", "t2"]);
+    const pages = () => t.calls.filter((c) => c.url.includes("/shots?")).length;
+    let before = pages();
+    for (let period = 0; period < 4; period++) {
+      vi.setSystemTime(Date.now() + 15000);
+      expect(await listing()).toEqual(["t1", "t3", "t2"]);
+      expect(pages()).toBe(++before);
+    }
+    await t.ok({ action: "rate-shot", shotId: "s4204", score: 90 });
+    expect(await listing()).toEqual(["t1", "t3", "t2"]);
+    expect(pages()).toBe(before);
+    t.shots.delete("s4204");
+    vi.setSystemTime(Date.now() + 15000);
+    const read = fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) =>
+      url.endsWith("/shots/ids") ? json({ error: "Busy" }, 503) : read(url, init)));
+    expect((await t.settled({ action: "coffees" })).data.history.error).toBe("requestFailed");
+    vi.stubGlobal("fetch", read);
+    expect(await listing()).toEqual(["t1", "t2", "t3"]);
+    expect(pages()).toBe(before + 1);
+  });
+
+  it("renders saved order below one second after restart while validating 4,205 shots with real request latency", async () => {
+    const initial = Array.from({ length: 4205 }, (_, i) => ({
+      ...makeShot(`s${i}`, -i, { beanBatchId: i === 4204 ? "t3" : "t1" }), measurements: [],
+    }));
+    let clockOffset = 0;
+    const realNow = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + clockOffset);
+    const t = setup({}, { ...ratioWorld(), shots: initial, latencyMs: 300 });
+    const measurements: { scenario: string; ms: number; pages: number; probes: number }[] = [];
+    const counts = () => ({ pages: t.calls.filter((c) => c.url.includes("/shots?")).length,
+      probes: t.calls.filter((c) => c.url.endsWith("/shots/ids")).length });
+    const listing = async (scenario: string) => {
+      const start = performance.now(), before = counts();
+      const response = (await t.control({ action: "coffees", includeFinished: true })).data;
+      const after = counts();
+      measurements.push({ scenario, ms: Math.round(performance.now() - start),
+        pages: after.pages - before.pages, probes: after.probes - before.probes });
+      expect(measurements.at(-1)!.ms).toBeLessThan(1000);
+      return response;
+    };
+    try {
+      const first = await listing("first install / no saved order");
+      expect(first.history).toMatchObject({ source: "none", stale: true, refreshing: true, cache: "missing" });
+      expect(first.coffees.map((c: ObjectData) => c.id)).toEqual(["t1", "t2", "t3"]);
+      expect(counts().pages).toBeLessThan(43);
+      await t.ok({ action: "coffees" });
+      expect(counts()).toEqual({ pages: 43, probes: 2 });
+      expect(t.store.has("beanJournal/coffeeHistory")).toBe(true);
+      await t.ok({ action: "old-bags" });
+      expect(counts()).toEqual({ pages: 43, probes: 2 });
+      for (let period = 1; period <= 4; period++) {
+        clockOffset += 15000;
+        const response = await listing(`actual coffee response +${period * 15}s`);
+        expect(response.coffees.map((c: ObjectData) => c.id)).toEqual(["t1", "t3", "t2"]);
+        expect(measurements.at(-1)).toMatchObject({ pages: 1, probes: 1 });
+        await t.ok({ action: "coffees" });
+      }
+      await t.ok({ action: "coffees" });
+      t.batches.find((batch) => batch.id === "t3")!.archived = true;
+      await t.put({ context: { beanBatchId: "t2" } });
+      t.restart();
+      const restarted = await listing("restart / saved order / fresh selection and finished state");
+      expect(restarted.history).toMatchObject({ source: "saved", stale: true, refreshing: true, error: null });
+      expect(restarted.coffees.map((c: ObjectData) => c.id)).toEqual(["t2", "t1", "t3"]);
+      const start = performance.now(), before = counts();
+      await t.ok({ action: "coffees" });
+      measurements.push({ scenario: "restart validation remainder", ms: Math.round(performance.now() - start),
+        pages: counts().pages - before.pages, probes: counts().probes - before.probes });
+      expect(counts().pages).toBe(43 + 4 + 43);
+      console.table(measurements);
+    } finally { clock.mockRestore(); }
+  }, 30000);
+
+  it("keeps saved coffee cards with explicit background errors after restart, and retries on request", async () => {
+    const t = setup({}, { ...ratioWorld(), shots: [
+      makeShot("s1", -200, { beanBatchId: "t1" }), makeShot("s2", -100, { beanBatchId: "t3" }),
+    ] });
+    await t.ok({ action: "coffees" });
+    t.batches.find((batch) => batch.id === "t3")!.archived = true;
+    await t.put({ context: { beanBatchId: "t2" } });
+    const read = fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) =>
+      url.includes("/shots?") ? json({ error: "Busy" }, 503) : read(url, init)));
+    t.restart();
+    const failed = await t.settled({ action: "coffees", includeFinished: true });
+    expect(failed.data.coffees.map((c: ObjectData) => c.id)).toEqual(["t2", "t1", "t3"]);
+    expect(failed.data.history).toMatchObject({ source: "saved", stale: true, refreshing: false, error: "requestFailed" });
+    vi.stubGlobal("fetch", read);
+    const retried = await t.settled({ action: "coffees", includeFinished: true, retryHistory: true });
+    expect(retried.data.history).toMatchObject({ source: "current", stale: false, refreshing: false, error: null });
   });
 
   it("lists coffees, saves one, asks about a duplicate and adds a bag", async () => {
@@ -401,7 +517,7 @@ describe("Bean Journal plugin", () => {
     const failed = await t.control({ action: "save-coffee", id: "t1", fields: { frozen: true } });
     expect(failed.status).toBe(400);
     expect(failed.data).toEqual({ code: "invalidFreezerDates", error: texts.errors.invalidFreezerDates });
-    expect(t.calls.some((c) => c.method !== "GET")).toBe(false);
+    expect(t.calls.some((c) => c.method !== "GET" && !c.url.endsWith("/store/beanJournal/coffeeHistory"))).toBe(false);
   });
 
   it("saves Decaid's other coffee fields and an assistant's photo with the coffee, checking the photo before writing", async () => {
@@ -411,7 +527,7 @@ describe("Bean Journal plugin", () => {
     });
     const before = t.calls.length;
     expect((await t.control({ action: "save-coffee", id: "t1", fields: { species: "Arabica" }, photo: "ftp://x" })).data.code).toBe("invalidArguments");
-    expect(t.calls.slice(before).some((c) => c.method !== "GET")).toBe(false);
+    expect(t.calls.slice(before).some((c) => c.method !== "GET" && !c.url.endsWith("/store/beanJournal/coffeeHistory"))).toBe(false);
 
     const url = "https://shop.example/n.png";
     const edited = (await t.ok({ action: "save-coffee", id: "t1", photo: url, fields: { species: "Arabica", decafProcess: "Sugarcane EA",
