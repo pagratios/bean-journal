@@ -110,7 +110,10 @@ export function createPlugin(host: Host) {
       return answer;
     } finally {
       if (writesShelf) forgetShelf();
-      if (method !== "GET" && /^\/shots(?:[/?]|$)/.test(path)) coffeeHistory.invalidate();
+      if (method !== "GET" && /^\/shots(?:[/?]|$)/.test(path)) {
+        const id = /^\/shots\/([^/?]+)$/.exec(path)?.[1];
+        coffeeHistory.invalidate(id ? decodeURIComponent(id) : undefined);
+      }
     }
   }
   const enc = encodeURIComponent;
@@ -735,6 +738,19 @@ export function createPlugin(host: Host) {
   }
   const coffeeHistory = createCoffeeHistory<ObjectData>({
     readShots: async (offset, limit) => items(object(await local(`/shots?limit=${limit}&offset=${offset}&order=desc`)).items),
+    readShotIds: async () => {
+      const ids = await local("/shots/ids");
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id)) throw new Error("invalidData");
+      return ids;
+    },
+    readShot: async (id) => {
+      try { return object(await local(`/shots/${enc(id)}`)); }
+      catch (error) {
+        if (error instanceof Error && error.message === "notFound") return null;
+        throw error;
+      }
+    },
+    shotId: (shot) => text(shot.id),
     coffeeId: (shot) => text(optionalObject(optionalObject(shot.workflow).context).beanBatchId) || null,
     brewedAt: (shot) => isBrew(shotKind(optionalObject(optionalObject(shot.workflow).profile))) ? Date.parse(text(shot.timestamp)) : null,
   });
@@ -1324,6 +1340,7 @@ export function createPlugin(host: Host) {
       stopped = false;
       latestMemo.clear();
       coffeeHistory.invalidate();
+      coffeeHistory.lastBrewed().catch(log("coffee history"));
       // keepBrewTemp compares with the workflow as it was; a clean-up from before the start is undone.
       local("/workflow").then((w) => { seenWorkflow ??= object(w); }).catch(log("workflow"));
       ratioMemory.follow().catch(log("ratio memory"));
@@ -1348,7 +1365,9 @@ export function createPlugin(host: Host) {
           keepBrewTempSoon();
         } else if (event.name === "shotStored" || event.name === "shotUpdated") {
           latestMemo.clear();
-          coffeeHistory.invalidate();
+          const payload = optionalObject(event.payload);
+          const changedId = text(payload.id ?? payload.shotId);
+          coffeeHistory.invalidate(changedId || undefined);
           if (event.name === "shotStored") {
             const p = optionalObject(event.payload);
             const id = localId(p.id ?? p.shotId);

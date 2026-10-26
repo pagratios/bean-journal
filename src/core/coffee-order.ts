@@ -19,56 +19,145 @@ export function sortCoffees<Coffee>(coffees: readonly Coffee[], options: CoffeeS
 }
 
 export type CoffeeHistoryOptions<Shot> = {
-  /** A complete, consistently ordered shot listing. Return fewer than limit only at the end. */
+  /** Complete summaries in a stable order. Pages are always requested at Decaid's actual cap of 100. */
   readShots: (offset: number, limit: number) => Promise<readonly Shot[]>;
+  /** All shot IDs, including non-brews. This is a lightweight membership query, not full shot records. */
+  readShotIds: () => Promise<readonly string[]>;
+  /** Read current identity/time after an event. Return null only for a confirmed missing shot. */
+  readShot: (id: string) => Promise<Shot | null>;
+  shotId: (shot: Shot) => string;
   /** A stable bag id, never a display name. Null means the shot cannot be assigned confidently. */
   coffeeId: (shot: Shot) => string | null | Promise<string | null>;
   /** The original brew time in milliseconds, not an edit/upload time. Null excludes non-brews. */
   brewedAt: (shot: Shot) => number | null;
-  /** Deletions may emit no event: history expires even when the host never invalidates it. Default: 15 seconds. */
-  maxAgeMs?: number;
+  /** Interval between membership probes and one-page missed-edit audits, measured from completion. Default: 15s. */
+  probeIntervalMs?: number;
 };
 
-/** Rebuilds history from shot snapshots so deletion/reassignment also removes an old bag's last use. */
+/** Retains every shot's use, so removing/reassigning a winner reveals the next brew without rescanning history. */
 export function createCoffeeHistory<Shot>(options: CoffeeHistoryOptions<Shot>) {
-  const maxAgeMs = options.maxAgeMs ?? 15000;
-  if (!Number.isFinite(maxAgeMs) || maxAgeMs < 0) throw new Error("invalidArguments");
-  type Snapshot = { at: number; lastBrewed: ReadonlyMap<string, number> };
+  const interval = options.probeIntervalMs ?? 15000;
+  if (!Number.isFinite(interval) || interval < 0) throw new Error("invalidArguments");
+  type Use = { coffee: string | null; time: number | null };
+  type Snapshot = { uses: Map<string, Use>; lastBrewed: ReadonlyMap<string, number> };
   let generation = 0;
   let cached: Snapshot | null = null;
-  let pending: { generation: number; promise: Promise<Snapshot | null> } | null = null;
+  let pending: Promise<void> | null = null;
+  let dirty = new Set<string>();
+  let rebuild = true;
+  let probedAt: number | null = null;
+  let auditOffset = 0;
+  const changed = new Error("coffeeHistoryChanged");
 
-  function invalidate() { generation++; cached = null; }
-
-  async function scan(version: number): Promise<Snapshot | null> {
-    const at = Date.now(), lastBrewed = new Map<string, number>(), limit = 100;
-    for (let offset = 0; ; offset += limit) {
+  /** Supply an event/write's shot ID; no ID requests an explicit complete reconciliation. */
+  function invalidate(id?: string) {
+    generation++;
+    if (id) dirty.add(id);
+    else rebuild = true;
+  }
+  function check(version: number) { if (version !== generation) throw changed; }
+  async function ids() {
+    const values = await options.readShotIds();
+    if (!Array.isArray(values) || values.some((id) => typeof id !== "string" || !id) || new Set(values).size !== values.length)
+      throw new Error("invalidData");
+    return new Set(values);
+  }
+  function sameIds(a: ReadonlySet<string>, b: ReadonlySet<string>) {
+    return a.size === b.size && [...a].every((id) => b.has(id));
+  }
+  async function use(shot: Shot, uses: Map<string, Use>, version: number) {
+    const id = options.shotId(shot);
+    if (typeof id !== "string" || !id) throw new Error("invalidData");
+    const time = options.brewedAt(shot);
+    const coffee = time !== null && Number.isFinite(time) ? await options.coffeeId(shot) : null;
+    check(version);
+    uses.set(id, { coffee, time: time !== null && Number.isFinite(time) ? time : null });
+  }
+  async function scan(version: number) {
+    const before = await ids(), uses = new Map<string, Use>(), limit = 100;
+    check(version);
+    for (let offset = 0; ; ) {
       const shots = await options.readShots(offset, limit);
-      if (version !== generation) return null;
+      check(version);
+      if (!Array.isArray(shots) || shots.length > limit) throw new Error("invalidData");
       for (const shot of shots) {
-        const timestamp = options.brewedAt(shot);
-        if (timestamp === null || !Number.isFinite(timestamp)) continue;
-        const id = await options.coffeeId(shot);
-        if (version !== generation) return null;
-        if (id && (!lastBrewed.has(id) || timestamp > lastBrewed.get(id)!)) lastBrewed.set(id, timestamp);
+        if (uses.has(options.shotId(shot))) throw changed;
+        await use(shot, uses, version);
       }
+      offset += shots.length;
       if (shots.length < limit) break;
     }
-    return cached = { at, lastBrewed };
+    const after = await ids();
+    check(version);
+    if (!sameIds(before, after) || !sameIds(after, new Set(uses.keys()))) throw changed;
+    return uses;
   }
-
-  async function lastBrewed(): Promise<ReadonlyMap<string, number>> {
+  async function refresh() {
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (cached && Date.now() - cached.at < maxAgeMs) return new Map(cached.lastBrewed);
       const version = generation;
-      if (!pending || pending.generation !== version) pending = { generation: version, promise: scan(version) };
-      const reading = pending;
-      let snapshot: Snapshot | null;
-      try { snapshot = await reading.promise; }
-      finally { if (pending === reading) pending = null; }
-      if (snapshot && version === generation) return new Map(snapshot.lastBrewed);
+      try {
+        const full = rebuild || !cached;
+        const probe = full || probedAt === null || Date.now() - probedAt >= interval;
+        if (!full && !probe && !dirty.size) return;
+        let uses: Map<string, Use>, nextOffset = auditOffset;
+        if (full) {
+          uses = await scan(version);
+          nextOffset = 0;
+        } else {
+          uses = new Map(cached!.uses);
+          const updates = new Set(dirty);
+          if (probe) {
+            const current = await ids();
+            check(version);
+            for (const id of uses.keys()) if (!current.has(id)) uses.delete(id);
+            for (const id of current) if (!uses.has(id)) updates.add(id);
+            // IDs detect silent deletes/additions, not missed edits. Audit a bounded page, never expire the index.
+            const offset = auditOffset < current.size ? auditOffset : 0;
+            const shots = await options.readShots(offset, 100);
+            check(version);
+            if (!Array.isArray(shots) || shots.length > 100) throw new Error("invalidData");
+            if (shots.length !== Math.min(100, current.size - offset)
+              || new Set(shots.map(options.shotId)).size !== shots.length) throw changed;
+            for (const shot of shots) {
+              if (!current.has(options.shotId(shot))) throw changed;
+              await use(shot, uses, version);
+            }
+            nextOffset = shots.length < 100 || offset + shots.length >= current.size ? 0 : offset + shots.length;
+          }
+          for (const id of updates) {
+            const shot = await options.readShot(id);
+            check(version);
+            if (shot === null) uses.delete(id);
+            else {
+              if (options.shotId(shot) !== id) throw new Error("invalidData");
+              await use(shot, uses, version);
+            }
+          }
+        }
+        check(version);
+        const lastBrewed = new Map<string, number>();
+        for (const { coffee, time } of uses.values()) {
+          if (coffee && time !== null && (!lastBrewed.has(coffee) || time > lastBrewed.get(coffee)!)) lastBrewed.set(coffee, time);
+        }
+        cached = { uses, lastBrewed };
+        dirty = new Set();
+        rebuild = false;
+        auditOffset = nextOffset;
+        if (probe) probedAt = Date.now();
+        return;
+      } catch (error) {
+        if (error !== changed) throw error;
+      }
     }
-    throw new Error("coffeeHistoryChanged");
+    throw changed;
+  }
+  async function lastBrewed(): Promise<ReadonlyMap<string, number>> {
+    if (!pending) {
+      pending = refresh().finally(() => { pending = null; });
+    }
+    await pending;
+    if (rebuild || dirty.size) return lastBrewed();
+    return new Map(cached!.lastBrewed);
   }
 
   return { lastBrewed, invalidate };

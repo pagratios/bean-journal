@@ -140,6 +140,7 @@ function setup(settings: ObjectData = {}, world: World = {}) {
       }
       return json(grinders[i]);
     }
+    if (route === "/shots/ids") return json([...shots.keys()]);
     if (route === "/shots") {
       const batchIds = q.get("beanId") ? new Set(batches.filter((x) => x.beanId === q.get("beanId")).map((x) => x.id)) : null;
       const all = [...shots.values()].filter((s) => {
@@ -248,7 +249,10 @@ describe("Bean Journal plugin", () => {
     expect(await listing()).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
     expect(await listing({ includeFinished: false })).toEqual(["new", "tie", "old", "unseen"]);
     expect(await listing({ search: "same" })).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
-    expect(t.calls.filter((c) => c.url.includes("/shots?"))).toHaveLength(1);
+    const pages = t.calls.filter((c) => c.url.includes("/shots?")).length;
+    vi.setSystemTime(Date.now() + 15000);
+    expect(await listing()).toEqual(["new", "tie", "old", "unseen", "done", "done-old"]);
+    expect(t.calls.filter((c) => c.url.includes("/shots?"))).toHaveLength(pages + 1);
   });
 
   it("refreshes new brews, edits, reassignments, confirmed deletions and missed-event changes", async () => {
@@ -303,6 +307,35 @@ describe("Bean Journal plugin", () => {
     expect(failed.data.code).toBe("requestFailed");
     vi.stubGlobal("fetch", read);
     expect((await t.ok({ action: "coffees" })).coffees.map((c: ObjectData) => c.id)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  it("keeps a 4,205-shot index across visible 15-second refresh periods and probes deletion errors explicitly", async () => {
+    vi.useFakeTimers();
+    const t = setup({}, ratioWorld());
+    for (let i = 0; i < 4205; i++) t.shots.set(`s${i}`, {
+      ...makeShot(`s${i}`, -i, { beanBatchId: i === 4204 ? "t3" : "t1" }), measurements: [],
+    });
+    const listing = async () => (await t.ok({ action: "coffees" })).coffees.map((c: ObjectData) => c.id);
+    expect(await listing()).toEqual(["t1", "t3", "t2"]);
+    const pages = () => t.calls.filter((c) => c.url.includes("/shots?")).length;
+    let before = pages();
+    for (let period = 0; period < 4; period++) {
+      vi.setSystemTime(Date.now() + 15000);
+      expect(await listing()).toEqual(["t1", "t3", "t2"]);
+      expect(pages()).toBe(++before);
+    }
+    await t.ok({ action: "rate-shot", shotId: "s4204", score: 90 });
+    expect(await listing()).toEqual(["t1", "t3", "t2"]);
+    expect(pages()).toBe(before);
+    t.shots.delete("s4204");
+    vi.setSystemTime(Date.now() + 15000);
+    const read = fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) =>
+      url.endsWith("/shots/ids") ? json({ error: "Busy" }, 503) : read(url, init)));
+    expect((await t.control({ action: "coffees" })).data.code).toBe("requestFailed");
+    vi.stubGlobal("fetch", read);
+    expect(await listing()).toEqual(["t1", "t2", "t3"]);
+    expect(pages()).toBe(before + 1);
   });
 
   it("lists coffees, saves one, asks about a duplicate and adds a bag", async () => {

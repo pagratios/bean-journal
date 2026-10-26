@@ -223,6 +223,9 @@ import { createCoffeeHistory, sortCoffees } from "bean-journal/core";
 
 const history = createCoffeeHistory({
   readShots: (offset, limit) => readShotPage(offset, limit),
+  readShotIds: () => readAllShotIds(),
+  readShot: (id) => readShotOrNullIfMissing(id),
+  shotId: (shot) => shot.id,
   coffeeId: (shot) => bagIdForShot(shot),
   brewedAt: (shot) => isActualBrew(shot) ? Date.parse(shot.timestamp) : null,
 });
@@ -241,19 +244,39 @@ within each group. Ties and bags without history preserve the input's relative o
 promotes a bag. Use stable bag ids, not names or bean ids shared by multiple bags. Bean Journal uses only the shot's
 `workflow.context.beanBatchId`; an unlinked/name-only shot does not guess which bag was used.
 
-The host supplies a complete, consistently ordered paginated listing; `readShots(offset, limit)` must honor both
-arguments and return fewer than `limit` (100) only at the end. Summaries are sufficient if they carry the original
+The host supplies a complete, consistently ordered paginated listing; `readShots(offset, limit)` returns fewer than
+`limit` (100) only at the end. **Decaid caps actual pages at 100**, even when its response echoes a larger requested
+limit. Do not increase the request size or infer support from that echo. Summaries are sufficient if they carry the original
 brew timestamp and enough capture-time identity to assign a bag confidently. `coffeeId` may be asynchronous; return
 `null` for an uncertain match. `brewedAt` returns milliseconds, or `null` for cleaning/calibration/non-brews. Non-finite
 times are excluded. Never use selection, modification or upload times as a brew time.
 
-Call `history.invalidate()` on shot stored/updated events and after local shot writes/deletions, including coffee
-reassignment. Refresh the page's coffee response on opening either view, on selection changes and periodically while
-visible. History expires after 15 seconds (`maxAgeMs` overrides it), so a deletion with no event is still noticed.
-Every refresh rebuilds the map, removing deleted/reassigned uses rather than only adding newer timestamps. Concurrent
-reads share a scan; invalidation during a scan discards and retries it, rejecting with `coffeeHistoryChanged` after
-three busy attempts. Read/adapter errors reject without caching partial history. `lastBrewed()` returns a defensive
-map copy. The host must surface errors and reject reads after unload; invalidate on unload/reload as well.
+The retained index keeps each shot's bag and original brew time, including older uses behind a bag's newest brew.
+Call `history.invalidate(shotId)` on shot stored/updated events and after local shot writes/deletions, including
+reassignment. The next read refreshes only those IDs; reassignment/deletion removes obsolete uses and exposes the
+previous brew without scanning again. An unrelated notes/rating/upload edit cannot promote a bag. Without an ID,
+`invalidate()` explicitly requests a full rebuild; reserve this for startup, unload or an unknown change, not polling.
+
+`readShotIds` supplies **all** IDs (Decaid's `/shots/ids`, one lightweight request; response size and local comparison
+are proportional to shot count). Every 15 seconds, measured from the previous probe's **completion**, the runtime
+reconciles membership: silent deletions remove indexed entries, and missed additions/imports are fetched individually.
+It also audits one 100-summary page to recover missed same-ID edits. Unchanged warm reads need no full scan: zero
+history requests between probes, and two per due probe regardless of history size. `probeIntervalMs` overrides the
+probe interval; it is not an index TTL (`maxAgeMs` is no longer an option).
+
+There is no Decaid modified-since/revision API: an ID-only probe cannot detect edits to existing IDs. Normal events
+update immediately on the next read; a missed same-ID edit is found when the rolling audit reaches its page
+(43 active refresh periods, about 10m45s, for 4,205 unchanged shots). Audit progress requires reads; this is not a
+claim of exact instantaneous change detection. The first read in a new runtime does a complete scan, bracketed by
+ID checks; Bean Journal starts this on load, but a view opened before initialization finishes waits for the exact
+order. No partial map is shown and no later background initialization reorders visible cards.
+
+Concurrent reads share one operation, including retries. Invalidations during an operation discard its candidate,
+retrying at most three times before `coffeeHistoryChanged`. Failed pages/probes/identity lookups reject, preserve
+pending work and do not return a stale success or cache partial history; a subsequent call retries. `readShot` returns
+null only on confirmed absence, never on network errors. `lastBrewed()` returns a defensive map copy. Hosts must
+surface errors, reject reads after unload, and invalidate on unload/reload. Existing consumers must add the three
+new identity/membership adapters and pass IDs to event invalidation when updating their pinned core version.
 
 ### Resting age and freezer intervals
 

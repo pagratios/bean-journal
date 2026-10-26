@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.6
+
+- Keep a per-shot coffee-use index instead of rereading the entire shot history every 15 seconds or after each edit.
+  Refresh changed shots by ID; preserve older brews when a shot is reassigned or deleted.
+- Detect silent deletions and missed additions with a lightweight ID probe, and audit one page per refresh period
+  for missed edits. Keep Decaid's actual 100-shot page cap; surface failed probes rather than returning stale success.
+- Start exact history initialization when the plugin loads. Export retained history and its identity/probe adapters
+  from `bean-journal/core` for other plugins.
+
 ## 0.1.5
 
 - Show compact resting-age labels, such as 5d, on coffee cards, in the picker and in bag details. Count calendar
