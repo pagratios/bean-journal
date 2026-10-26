@@ -1,6 +1,6 @@
 {
   "name": "bean-journal",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "description": "Bean Journal: a Decaid plugin for Streamline (bean-journal.reaplugin)",
