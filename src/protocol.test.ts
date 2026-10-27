@@ -3,6 +3,7 @@ import {
   BEVERAGES, designedProfile, editedProfile, notesBlockPatch, notesWithBlock, object, profileAt, profileExecution, shotLine, shotNotes, shotRpm,
   shotSummary, shotText, shotWater, visualizerId, type ObjectData,
 } from "./protocol";
+import { BALANCES, BODIES, shotBalance, shotBodyLevel } from "./protocol";
 
 const start = Date.parse("2026-10-08T09:00:00Z");
 function shot(annotations: ObjectData = {}, context: ObjectData = {}): ObjectData {
@@ -18,6 +19,22 @@ function shot(annotations: ObjectData = {}, context: ObjectData = {}): ObjectDat
 }
 
 describe("Shot page summary", () => {
+  it("reads every rating level and distinguishes missing from cleared extras without migrating old values", () => {
+    for (const [i, balance] of BALANCES.entries()) {
+      const body = BODIES[i], annotations = { extras: { beanJournal: { balance, body } } };
+      expect(shotBalance(annotations)).toBe(balance);
+      expect(shotBodyLevel(annotations)).toBe(body);
+      const summary = shotSummary(shot(annotations));
+      expect(summary).toMatchObject({ balance, body });
+      expect(shotText(summary)).toContain(`${balance} · ${body} body`);
+      expect(notesBlockPatch(shot(annotations))?.espressoNotes).toContain(
+        `Taste: ${balance[0].toUpperCase() + balance.slice(1)} · Body: ${body[0].toUpperCase() + body.slice(1)}`);
+    }
+    expect(shotBalance({})).toBeUndefined();
+    expect(shotBodyLevel({})).toBeUndefined();
+    expect(shotBalance({ extras: { beanJournal: { balance: null } } })).toBeNull();
+    expect(shotBodyLevel({ extras: { beanJournal: { body: null } } })).toBeNull();
+  });
   it("marks where each profile step starts and works out the weight flow from the weight", () => {
     const at = (t: number, frame: number, weight: number) => ({
       machine: { timestamp: new Date(start + t * 1000).toISOString(), state: { state: "espresso", substate: "pouring" }, pressure: 9, flow: 2,

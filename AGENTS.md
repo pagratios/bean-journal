@@ -58,7 +58,8 @@ its key-value store). Build, test, install and preview steps are in `README.md`;
 - **No scrolling on the tablet.** The owner's tablet is a Samsung Galaxy Tab A11 (1340×800, full screen). Every view
   must fit 1280×800 and 1340×800 without page scrolling; lists and columns scroll inside themselves. Button sizes:
   toggles `2.267rem`, ± steps `1.733×2.4rem`, R2 `1.867rem`; don't enlarge them. The score is a slider in steps of
-  5 with ticks and no preset chips. Taste and body share one line as joined buttons.
+  5 with ticks and no preset chips. Taste and body share one line as five-step sliders with explicit clear buttons;
+  existing three-level labels keep their meanings at steps 1, 3 and 5.
 - Streamline's header button opens the Shot page full screen over the dashboard (overlay `size: "full"`, Streamline
   0.2.15 or newer; the coffee picker when no coffee is chosen). The gear card stays a small overlay. Settings → "When
   I choose a coffee" keeps the settings or loads the coffee's last/best shot.

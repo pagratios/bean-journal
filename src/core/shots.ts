@@ -17,8 +17,10 @@ export function shotKind(profile: ObjectData): ShotKind {
 export const isBrew = (kind: ShotKind) => kind !== "cleaning" && kind !== "calibration";
 
 /** The user's taste verdict and the cup's body; Decaid has no field for either, so each plugin keeps them in its extras. */
-export const BALANCES = ["sour", "balanced", "bitter"] as const;
-export const BODIES = ["thin", "medium", "heavy"] as const;
+export const BALANCES = ["sour", "sour-balanced", "balanced", "balanced-bitter", "bitter"] as const;
+export const BODIES = ["thin", "thin-medium", "medium", "medium-heavy", "heavy"] as const;
+export type Balance = typeof BALANCES[number];
+export type BodyLevel = typeof BODIES[number];
 
 /** The grinder's speed, a whole 1–5000, as the workflow carried it (Streamline's `extras.rpm`; some skins `grinderRpm`). */
 export function shotRpm(context: ObjectData): number | undefined {

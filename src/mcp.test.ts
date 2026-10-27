@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MCP_BUDGET, MCP_TOKEN, MCP_TOOLS, mcpMessage, mcpToolList, rateLimit, type McpContext } from "./mcp";
+import { BALANCES, BODIES } from "./core";
 
 type ObjectData = Record<string, unknown>;
 const object = (value: unknown) => value as ObjectData;
@@ -11,6 +12,16 @@ const call = (name: string, args: ObjectData = {}, id = 1) => ({ jsonrpc: "2.0",
 const props = (name: string, confirm: McpContext["confirm"] = "changes") => object(mcpToolList("full", confirm).find((t) => t.name === name)!.inputSchema.properties);
 
 describe("MCP messages", () => {
+  it("advertises and forwards all five taste/body values and explicit clearing", async () => {
+    expect(props("rate_shot").balance).toMatchObject({ enum: [...BALANCES, null] });
+    expect(props("rate_shot").body).toMatchObject({ enum: [...BODIES, null] });
+    const ctx = context({ level: "shots" });
+    for (const [i, balance] of [...BALANCES, null].entries()) {
+      const body = BODIES[i] ?? null;
+      await mcpMessage(call("rate_shot", { shot_id: "s1", balance, body }), ctx);
+      expect(ctx.act).toHaveBeenLastCalledWith("rate-shot", { action: "rate-shot", shotId: "s1", balance, body });
+    }
+  });
   it("answers initialize as Bean Journal, with the asked protocol version when known, else the newest", async () => {
     const known = await mcpMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } }, context());
     expect(known).toMatchObject({ id: 1, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} },
