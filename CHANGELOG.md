@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7
+
+- Rate taste and body on five-step sliders, side by side on the tablet, with explicit clear buttons. Existing sour,
+  balanced, bitter and thin, medium, heavy ratings keep their meanings; unset ratings stay unset until chosen.
+- Support the intermediate taste/body labels throughout shot editing, summaries, notes and MCP.
+- Lay out coffee-use choices as an intentional two-by-two grid instead of wrapping one action onto its own row;
+  stack actions on narrow screens. Export the product-neutral rating controls and choice dialog from the core.
+
 ## 0.1.6
 
 - Keep a per-shot coffee-use index instead of rereading the entire shot history every 15 seconds or after each edit.

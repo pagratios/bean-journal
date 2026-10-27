@@ -14,7 +14,7 @@ export { shiftedSteps, profileAt, editedProfile, profileExecution, BEVERAGES } f
 export const tagOf = (holder: ObjectData) => tagIn(holder, "beanJournal");
 /** The user's taste verdict kept on the shot: a value, null when cleared, undefined when never set. */
 export const shotBalance = (annotations: ObjectData) => tagChoice(tagOf(annotations), "balance", BALANCES);
-/** The cup's body as the plugin keeps it (thin, medium, heavy); null once cleared, undefined when never set. */
+/** The cup's five-level body; null once cleared, undefined when never set. */
 export const shotBodyLevel = (annotations: ObjectData) => tagChoice(tagOf(annotations), "body", BODIES);
 /** A water's name as typed: one line, at most 80 characters. */
 export const waterName = (value: unknown) => text(value).replace(/[\r\n\t]+/g, " ").trim().slice(0, 80);

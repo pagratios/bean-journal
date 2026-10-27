@@ -6,6 +6,7 @@ import {
   type McpConfirm, type McpContext, type McpLevel, type McpSchema as Schema, type McpTool as Tool,
 } from "./core/mcp";
 import { BEVERAGES } from "./core/profiles";
+import { BALANCES, BODIES } from "./core/shots";
 
 export {
   MCP_BUDGET, MCP_CONFIRMS, MCP_LEVELS, MCP_PROTOCOLS, rateLimit, type McpConfirm, type McpContext, type McpLevel,
@@ -168,8 +169,8 @@ export const MCP_TOOLS: Tool[] = [
     properties: {
       shot_id: shotId,
       score: { type: ["integer", "null"], minimum: 0, maximum: 100 },
-      balance: { type: ["string", "null"], enum: ["sour", "balanced", "bitter", null] },
-      body: { type: ["string", "null"], enum: ["thin", "medium", "heavy", null] },
+      balance: { type: ["string", "null"], enum: [...BALANCES, null] },
+      body: { type: ["string", "null"], enum: [...BODIES, null] },
       notes: { type: "string", maxLength: 10000, description: "The user's notes; a Bean Journal block in them is kept apart and stays." },
       tds: { type: ["number", "null"], minimum: 0, maximum: 30, description: "Refractometer reading, %." },
       ey: { type: ["number", "null"], minimum: 0, maximum: 100, description: "Extraction yield, %." },

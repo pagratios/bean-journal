@@ -645,6 +645,27 @@ describe("Bean Journal plugin", () => {
     expect((await t.ok({ action: "shot-text", shotId: "s1" })).text).toContain("Espresso shot");
   });
 
+  it("round-trips five rating levels while omitted fields and unrelated extras stay untouched", async () => {
+    const t = setup();
+    t.shots.set("s1", makeShot("s1", -60, {}, { extras: { other: { keep: true } } }));
+    await t.ok({ action: "rate-shot", shotId: "s1", notes: "Still unrated" });
+    expect(object(object(t.shots.get("s1")!.annotations).extras)).not.toHaveProperty("beanJournal");
+    const balances = ["sour", "sour-balanced", "balanced", "balanced-bitter", "bitter"];
+    const bodies = ["thin", "thin-medium", "medium", "medium-heavy", "heavy"];
+    for (const [i, balance] of balances.entries()) {
+      const body = bodies[i];
+      expect((await t.ok({ action: "rate-shot", shotId: "s1", balance, body })).shot).toMatchObject({ balance, body });
+      expect((await t.ok({ action: "shot-by-id", shotId: "s1" })).shot).toMatchObject({ balance, body });
+      await t.ok({ action: "rate-shot", shotId: "s1", score: 85 });
+      expect(object(t.shots.get("s1")!.annotations)).toMatchObject({ extras: { beanJournal: { balance, body }, other: { keep: true } } });
+    }
+    await t.ok({ action: "rate-shot", shotId: "s1", balance: null, body: null });
+    expect(object(t.shots.get("s1")!.annotations)).toMatchObject({ extras: { beanJournal: { balance: null, body: null }, other: { keep: true } } });
+    for (const fields of [{ balance: 2 }, { body: 4 }, { balance: "slightly-sour" }, { body: "full" }]) {
+      expect((await t.control({ action: "rate-shot", shotId: "s1", ...fields })).status).toBe(400);
+    }
+  });
+
   it("puts back the coffee, grinder and speed after Streamline clears them", async () => {
     const t = setup({}, { beans: [{ id: "b1", roaster: "R", name: "Kiambu", decaf: false, archived: false, createdAt: "x" }],
       batches: [{ id: "t1", beanId: "b1", frozen: false, archived: false, createdAt: "y" }] });

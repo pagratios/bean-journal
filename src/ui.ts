@@ -1,5 +1,8 @@
 import type { Copy } from "./i18n";
 import { createPointerGuard } from "./core/pointer-guard";
+import { BALANCES, BODIES, type Balance, type BodyLevel } from "./core/shots";
+import { createRatingSlider, RATING_SLIDER_CSS } from "./core/rating-controls";
+import { askChoices, CHOICE_DIALOG_CSS, type DialogChoice } from "./core/choice-dialog";
 
 export type { Copy };
 declare const __DECAID_COPY__: Copy;
@@ -9,7 +12,8 @@ export function copy(): Copy {
 }
 
 // Serialized into the page: browser helpers must remain inside this function.
-function client(t: Copy, makePointerGuard: typeof createPointerGuard) {
+function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRatingSlider: typeof createRatingSlider,
+  showChoices: typeof askChoices, balances: typeof BALANCES, bodies: typeof BODIES) {
   type Data = Record<string, unknown>;
   type Coffee = {
     id: string; beanId: string; batchId: string | null; roaster: string; name: string;
@@ -26,7 +30,7 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard) {
   type Shot = {
     id: string; timestamp: string; profile: string; kind: string; brew: boolean; coffeeName: string; coffeeRoaster: string;
     coffeeId: string | null; beanId: string | null; dose: number | null; yield: number | null; duration: number | null;
-    grind: string; score: number | null; balance: string | null; body: string | null; notes: string; tds: number | null;
+    grind: string; score: number | null; balance: Balance | null; body: BodyLevel | null; notes: string; tds: number | null;
     ey: number | null; grinderId: string | null; grinderModel: string; rpm: number | null; water: string | null;
     visualizerId?: string | null; series: Series; steps?: Step[];
   };
@@ -440,28 +444,9 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard) {
 
   // ── Messages: the page's own dialog, in its theme, instead of the system's confirm(). ──
   // Resolves with the chosen value; Esc or a tap outside the box gives `dismiss`.
-  type Choice = { label: string; value: string; kind?: string };
-  function ask(text: string, choices: Choice[], dismiss: string) {
+  function ask(text: string, choices: DialogChoice[], dismiss: string) {
     closeDropdown();
-    return new Promise<string>((resolve) => {
-      const d = el("dialog", "msg") as HTMLDialogElement;
-      d.setAttribute("role", "alertdialog");
-      const box = el("div", "msg-box"), p = el("p", "msg-text", text), row = el("div", "msg-actions");
-      let answer = dismiss;
-      for (const c of choices) {
-        const b = el("button", c.kind ?? "", c.label) as HTMLButtonElement;
-        b.type = "button";
-        b.onclick = () => { answer = c.value; d.close(); };
-        row.append(b);
-      }
-      box.append(p, row);
-      d.append(box);
-      // The box fills the dialog, so a pointer on the dialog itself is on the backdrop.
-      d.addEventListener("pointerdown", (e) => { if (e.target === d) { e.preventDefault(); d.close(); } });
-      d.addEventListener("close", () => { d.remove(); resolve(answer); });
-      document.body.append(d);
-      d.showModal();
-    });
+    return showChoices(text, choices, dismiss);
   }
   const confirmIt = async (text: string, ok: string) =>
     (await ask(text, [{ label: t.cancel, value: "no", kind: "secondary" }, { label: ok, value: "yes" }], "no")) === "yes";
@@ -1131,7 +1116,6 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard) {
     // Rating
     const form = el("div", "panel rate");
     let score = s.score;
-    let balance = s.balance;
     const scoreRow = el("div", "score-row");
     const scoreValue = el("output", "score-value", score === null ? t.noScore : String(score));
     const range = el("input") as HTMLInputElement;
@@ -1151,41 +1135,16 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard) {
     range.oninput = () => { score = Number(range.value); scoreValue.textContent = String(score); paintScore(); };
     scoreRow.append(el("span", "label", t.score), scoreValue, slider);
     paintScore();
-    // Taste and body side by side on one line, each a row of joined buttons.
-    const tasteRow = el("div", "taste-row");
-    const group = (label: string) => {
-      const g = el("div", "tb-group"), seg = el("div", "seg");
-      g.append(el("span", "label", label), seg);
-      tasteRow.append(g);
-      return seg;
-    };
-    const tasteSeg = group(t.taste);
-    const tastes = ["sour", "balanced", "bitter"] as const;
-    const tasteButtons = tastes.map((value) => {
-      const b = el("button", "toggle", t[value]) as HTMLButtonElement;
-      b.type = "button";
-      b.setAttribute("aria-pressed", String(balance === value));
-      b.onclick = () => {
-        balance = balance === value ? null : value;
-        tasteButtons.forEach((x, i) => x.setAttribute("aria-pressed", String(balance === tastes[i])));
-      };
-      tasteSeg.append(b);
-      return b;
+    const tasteRow = el("div", "rating-sliders");
+    const taste = makeRatingSlider({
+      label: t.taste, values: balances, labels: t, value: s.balance,
+      unsetLabel: t.noScore, clearLabel: t.clearRating.replace("{label}", t.taste),
     });
-    let body = s.body;
-    const bodySeg = group(t.body);
-    const bodies = ["thin", "medium", "heavy"] as const;
-    const bodyButtons = bodies.map((value) => {
-      const b = el("button", "toggle", t.bodies[value]) as HTMLButtonElement;
-      b.type = "button";
-      b.setAttribute("aria-pressed", String(body === value));
-      b.onclick = () => {
-        body = body === value ? null : value;
-        bodyButtons.forEach((x, i) => x.setAttribute("aria-pressed", String(body === bodies[i])));
-      };
-      bodySeg.append(b);
-      return b;
+    const body = makeRatingSlider({
+      label: t.body, values: bodies, labels: t.bodies, value: s.body,
+      unsetLabel: t.noScore, clearLabel: t.clearRating.replace("{label}", t.body),
     });
+    tasteRow.append(taste.element, body.element);
     const notes = el("textarea") as HTMLTextAreaElement;
     notes.value = s.notes; notes.rows = 4; notes.maxLength = 10000; notes.placeholder = t.notesPlaceholder;
     notes.setAttribute("aria-label", t.notes);
@@ -1202,7 +1161,9 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard) {
       const rpmRaw = readNum(rpmIn);
       const rpmValue = rpmRaw && rpmRaw > 0 ? Math.round(rpmRaw) : null;
       if (!d || !y || d > 200 || y > 2000 || (tdsValue !== null && tdsValue > 30) || (eyValue !== null && eyValue > 100) || (rpmValue !== null && rpmValue > 5000)) { say(t.badNumbers, "error"); return false; }
-      const patch: Data = { shotId: s.id, score, balance, body };
+      const patch: Data = { shotId: s.id, score };
+      if (taste.value !== s.balance) patch.balance = taste.value;
+      if (body.value !== s.body) patch.body = body.value;
       // Only when changed: notes from another app may be longer than this field takes, and are left as they are.
       if (notes.value !== s.notes) patch.notes = notes.value;
       // A reading is sent only when there is one; an empty or 0 field clears a reading the shot had, else it says nothing.
@@ -2718,17 +2679,14 @@ dt{font-size:0.8rem;color:var(--muted)}dd{margin:0;font-size:1rem;font-weight:65
 .curve.compare{stroke-width:1.6;stroke-dasharray:5 3;opacity:.55}.readout-row .dot{display:inline-block;width:0.533rem;height:0.533rem;border-radius:50%;margin-right:0.333rem;vertical-align:middle}
 .legend{display:flex;flex-wrap:wrap;gap:0.267rem 0.933rem;font-size:0.8rem;color:var(--muted);margin-top:0.533rem}.key::before{content:"";display:inline-block;width:0.933rem;height:0.267rem;border-radius:2px;margin-right:0.333rem;vertical-align:middle}
 .key.p::before{background:var(--c-pressure)}.key.f::before{background:var(--c-flow)}.key.w::before{background:var(--c-weight)}.key.wf::before{background:var(--c-weight-flow)}.key.c::before{background:var(--c-temp)}.key.dash::before{background:repeating-linear-gradient(90deg,var(--muted) 0 3px,transparent 3px 6px)}.key.dots::before{width:0.267rem;height:0.933rem;background:repeating-linear-gradient(0deg,var(--muted) 0 2px,transparent 2px 5px)}
-.rate{display:grid;gap:0.533rem}.score-row,.taste-row,.extra-row{display:flex;gap:0.533rem;align-items:center;flex-wrap:wrap}.rate .label{margin:0}
+.rate{display:grid;gap:0.533rem}.score-row,.extra-row{display:flex;gap:0.533rem;align-items:center;flex-wrap:wrap}.rate .label{margin:0}
 .score-row input[type=range]{display:block;width:100%;margin:0;accent-color:hsl(var(--h,210) 62% 44%)}.score-value{min-width:2.4rem;font-size:1.6rem;font-weight:750;font-variant-numeric:tabular-nums;color:hsl(var(--h,210) 62% 38%)}
 /* A tick under every step of 5, a longer one every 10; inset by half the thumb so each sits under the thumb's centre. */
 .score-slider{flex:1;min-width:9.333rem;position:relative;padding-bottom:0.533rem}.score-ticks{position:absolute;left:8px;right:8px;bottom:0;height:0.533rem;display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none}
 .score-ticks i{width:1px;height:0.333rem;background:var(--ui-field-rule)}.score-ticks i.major{height:0.533rem;background:var(--muted)}
 [data-theme=dark] .score-value{color:hsl(var(--h,210) 65% 60%)}.score-row.unscored .score-value{color:var(--muted)}.score-row.unscored input[type=range]{accent-color:var(--accent)}
 .badge.scored{background:hsl(var(--h) 62% 44% / .16);color:hsl(var(--h) 70% 32%);font-weight:650}[data-theme=dark] .badge.scored{color:hsl(var(--h) 65% 62%)}
-/* The taste/body choices sit on one shared fill each, so they read as one control. */
 .toggle{background:var(--surface-2);color:var(--ink);min-width:6.4rem;min-height:2.267rem;padding:0.2rem 0.8rem}.toggle[aria-pressed=true]{background:var(--accent);color:var(--accent-ink)}
-.taste-row{flex-wrap:nowrap;gap:1.2rem}.tb-group{flex:1;min-width:0;display:flex;align-items:center;gap:0.533rem}.tb-group>.label{flex:none}.seg{flex:1;min-width:0;display:flex;background:var(--surface-2);border-radius:0.533rem}
-.seg .toggle{flex:1 1 auto;min-width:0;padding:0.2rem 0.533rem;font-size:0.933rem;border-radius:0;margin-left:-1px;overflow:hidden;text-overflow:ellipsis;background:transparent}.seg .toggle[aria-pressed=true]{background:var(--accent);position:relative}.seg .toggle:first-child{margin-left:0;border-radius:0.533rem 0 0 0.533rem}.seg .toggle:last-child{border-radius:0 0.533rem 0.533rem 0}
 .extra-row{align-items:flex-start;flex-wrap:nowrap}.extra-row label{display:block}.extra-row textarea{width:100%;resize:none;display:block}
 /* The notes take what the right pane has left, and give it up first. */
 .shot-side .rate{flex:1;display:flex;flex-direction:column;gap:0.533rem;min-height:0}.shot-side .extra-row{flex:1;display:flex;align-items:stretch;min-height:0}.shot-side .extra-row label{display:flex;flex-direction:column;min-height:0}.shot-side .extra-row textarea{flex:1;min-height:3rem}
@@ -2815,9 +2773,11 @@ html.gear-only,html.gear-only body{background:transparent!important;color-scheme
 .gear-only dialog.msg.next-gear{margin:0;width:34rem;max-width:none;box-shadow:none}.gear-only .next-gear h2{padding-right:2.4rem}
 [hidden]{display:none!important}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 /* Hover only where there is a pointer; on the tablet a tap shows the pressed state instead. */
-@media (hover:hover){button.secondary:not(:disabled):hover,.seg .toggle:not([aria-pressed=true]):hover,.card:not(:disabled):hover,nav button:not([aria-selected=true]):hover,.filters .dd:not(.active):hover,.next-pick:hover{background:var(--ui-hover)}}
+@media (hover:hover){button.secondary:not(:disabled):hover,.card:not(:disabled):hover,nav button:not([aria-selected=true]):hover,.filters .dd:not(.active):hover,.next-pick:hover{background:var(--ui-hover)}}
 @media (prefers-reduced-motion:reduce){button,.button,input.sw,input.sw::before,.dd-chevron,.combo-open svg{transition:none}.r2.measuring svg{animation:none}}
 @media (max-width:60rem){header{flex-wrap:wrap}#next-coffee{flex-basis:100%;order:3;margin-left:0}#view-shot{grid-template-columns:1fr;grid-template-rows:auto auto minmax(0,1fr)}.shot-bar,#shot-body>.chart-wrap,.shot-side{grid-column:1;grid-row:auto}.numbers{grid-template-columns:repeat(3,1fr)}.form-cols{grid-template-columns:1fr}}
+${RATING_SLIDER_CSS}
+${CHOICE_DIALOG_CSS}
 </style></head><body>
 <button type="button" id="leave" aria-label="${esc(t.close)}" hidden>×</button>
 <header><h1>${esc(t.title)}</h1><nav role="tablist">
@@ -2885,5 +2845,5 @@ html.gear-only,html.gear-only body{background:transparent!important;color-scheme
 <dialog id="picker"><div class="dialog-head"><h2>${esc(t.chooseCoffee)}</h2><label class="switch finished"><input type="checkbox" class="sw" id="picker-finished"> ${esc(t.showFinished)}</label><button type="button" id="picker-add" class="secondary">+ ${esc(t.addCoffee)}</button><button type="button" id="picker-close" class="secondary">${esc(t.close)}</button></div><div class="toolbar"><div id="picker-filters" class="filters"></div><input id="picker-search" type="search" placeholder="${esc(t.searchPlaceholder)}" aria-label="${esc(t.searchPlaceholder)}"><button type="button" id="picker-clear" class="secondary clear-filters" hidden>${esc(t.clearFilters)}</button><span id="picker-hint" class="muted">${esc(t.pickerHint)}</span></div><div id="picker-history" class="coffee-history" role="status" aria-live="polite" hidden></div><div id="picker-list"></div></dialog>
 </main>
 <footer id="actions" hidden><span id="unsaved-note" class="pill unsaved" role="status" hidden>${esc(t.unsaved)}</span><button type="button" id="act-cancel" class="secondary">${esc(t.cancel)}</button><button type="button" id="act-back" class="secondary" hidden>← ${esc(t.back)}</button><button type="button" id="act-done">${esc(t.done)}</button></footer>
-<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()});</script></body></html>`;
+<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()}, ${createRatingSlider.toString()}, ${askChoices.toString()}, ${JSON.stringify(BALANCES)}, ${JSON.stringify(BODIES)});</script></body></html>`;
 }

@@ -26,8 +26,9 @@ a long-press menu item, a screensaver button and overlay pages, from small to fu
 **Its page** (fits the tablet's screen, 1280×800 and 1340×800, without scrolling; light and dark follow Streamline)
 
 - **Shot**: the shot's chart (pressure, flow, weight, weight flow, temperature, targets and steps; full screen with a
-  double tap), compare with another shot, Older / Newer / Latest, a score slider (steps of 5), taste (sour, balanced,
-  bitter) and body (thin, medium, heavy), notes, dose, yield, TDS and EY (linked), grind, grinder, RPM, water, the
+  double tap), compare with another shot, Older / Newer / Latest, a score slider (steps of 5), five-step taste and body
+  sliders side by side (sour → balanced → bitter; thin → medium → heavy, with intermediate levels and clear buttons),
+  notes, dose, yield, TDS and EY (linked), grind, grinder, RPM, water, the
   coffee it was pulled with, a DiFluid R2 measurement through Decaid, **Load for next shot**, **Copy for AI**,
   **Open in Visualizer** and Delete (it asks). Edits are saved on Decaid's shot, and saved before the page closes
   when an espresso starts.
@@ -216,6 +217,58 @@ and its build reads the theme with
 
 The package is TypeScript source (no build step); a bundler such as esbuild and `"moduleResolution": "bundler"` read
 it as is. Only `src/core/` is in the package.
+
+### Taste/body sliders and choice dialogs
+
+`BALANCES` and `BODIES` contain five ordered string values. The existing values are unchanged and occupy levels
+1, 3 and 5; no stored-rating migration is needed. The intermediate taste labels are `sour-balanced` and
+`balanced-bitter`; body's are `thin-medium` and `medium-heavy`. `Balance` and `BodyLevel` are their union types.
+Omitted rating patches leave data untouched; `null` explicitly clears it.
+
+The browser helpers `createRatingSlider` and `askChoices` are self-contained: pass their `toString()` results into
+your serialized page client, just like `createPointerGuard`. Pass `BALANCES` and `BODIES` as JSON data; do not make
+a serialized helper depend on module imports. Append `RATING_SLIDER_CSS` and `CHOICE_DIALOG_CSS` **after** the page's
+base styles. The controls use the core theme tokens and the host's `.msg`, `.msg-box`, `.msg-text`, `.secondary`
+and `.label` styles. No new package entry point or browser dependency is needed.
+
+```ts
+import {
+  BALANCES, createRatingSlider, askChoices, RATING_SLIDER_CSS, CHOICE_DIALOG_CSS,
+} from "bean-journal/core";
+
+const taste = createRatingSlider({
+  label: "Taste", values: BALANCES,
+  labels: { sour: "Sour", "sour-balanced": "Sour-balanced", balanced: "Balanced",
+    "balanced-bitter": "Balanced-bitter", bitter: "Bitter" },
+  value: savedTaste, unsetLabel: "Not rated", clearLabel: "Clear taste",
+});
+// Put taste.element and the corresponding body control in a .rating-sliders row.
+// Read taste.value on save, or pass onChange(value) for immediate updates.
+
+const how = await askChoices("Use this coffee?", [
+  { label: "Cancel", value: "", kind: "secondary" },
+  { label: "Current profile and dose", value: "keep" },
+  { label: "Its last shot", value: "last" },
+  { label: "Its best shot", value: "best" },
+], "");
+```
+
+`createRatingSlider<Value extends string>(options: RatingSliderOptions<Value>)` returns
+`{ element: HTMLDivElement, readonly value: Value | null | undefined }`. Supply five distinct values, their labels,
+an initial `value`, an accessible `label`, `unsetLabel`, `clearLabel` and optionally `onChange(value: Value | null)`.
+It preserves initial `undefined` (never set), `null` (cleared) and all existing values without emitting an edit.
+The native range's middle placeholder is not a rating; tapping it explicitly selects the middle level.
+Clear emits `null`. Both native input and clear notify the form with a bubbling `input` event; compare the returned
+value with the original on save so unrelated edits do not turn an absent rating into a cleared one.
+
+`askChoices(text: string, choices: readonly DialogChoice[], dismiss: string): Promise<string>` accepts
+`{ label: string, value: string, kind?: string }` choices. The host should close its dropdown first. Escape, a
+backdrop tap or a host calling `dialog.close()` returns `dismiss`; selecting a button returns its value. Closing
+removes the dialog. Four actions use a two-by-two grid, stacking at viewport widths up to 30rem; long labels wrap
+inside their buttons rather than moving one button to an accidental extra row.
+
+These exports are unreleased until an owner-approved release after v0.1.6. Consumers that require released tags
+must wait for that release rather than inventing a tag or copying the helpers.
 
 ### Coffee ordering and brew history
 

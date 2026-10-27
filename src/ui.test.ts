@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import { transformSync } from "esbuild";
 import { texts } from "./i18n";
 import { page } from "./ui";
-import { createPointerGuard } from "./core";
+import { askChoices, CHOICE_DIALOG_CSS, createPointerGuard, createRatingSlider, RATING_SLIDER_CSS } from "./core";
 
 const source = readFileSync(resolve("src", "ui.ts"), "utf8");
 const theme = readFileSync(resolve("src", "core", "theme.css"), "utf8");
@@ -107,6 +107,20 @@ describe("the page", () => {
     const html = render();
     expect(html).toContain("html.gear-only,html.gear-only body{background:transparent!important;color-scheme:normal!important}");
     expect(source).toContain(`document.querySelector('meta[name="color-scheme"]')?.remove()`);
+  });
+
+  it("serializes the shared five-step controls and intentional dialog layout, saving only changed ratings", () => {
+    const html = render();
+    expect(html).toContain(createRatingSlider.toString());
+    expect(html).toContain(askChoices.toString());
+    expect(html).toContain(RATING_SLIDER_CSS);
+    expect(html).toContain(CHOICE_DIALOG_CSS);
+    expect(source).toContain('const tasteRow = el("div", "rating-sliders")');
+    expect(source).toContain("if (taste.value !== s.balance) patch.balance = taste.value");
+    expect(source).toContain("if (body.value !== s.body) patch.body = body.value");
+    expect(source).toContain("return showChoices(text, choices, dismiss)");
+    expect(html).toContain('"sour-balanced"');
+    expect(html).toContain('"medium-heavy"');
   });
 });
 
