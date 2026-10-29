@@ -130,6 +130,7 @@ describe("the page", () => {
     expect(html).toContain(CHART_READOUT_CSS);
     expect(source).toContain("const rowsBox = makeChartReadout(rows.map(");
     expect(source).toContain("other ? { current: t.thisShot, other: t.otherShot } : undefined");
+    expect(source).toContain("{ current: t.chartActual, target: t.chartTarget }");
     expect(source).not.toContain("readout-cols");
     expect(source).not.toContain('el("div", "readout-row")');
   });

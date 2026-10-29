@@ -4,10 +4,12 @@ export type ChartReadoutRow = {
   unit: string;
   value: string | null;
   other?: string | null;
+  target?: string | null;
 };
 
 /** Self-contained so a plugin can serialize it into its browser client with toString(). */
-export function createChartReadout(rows: readonly ChartReadoutRow[], comparison?: { current: string; other: string }) {
+export function createChartReadout(rows: readonly ChartReadoutRow[], comparison?: { current: string; other: string },
+  target?: { current: string; target: string }) {
   const table = document.createElement("table");
   table.className = "chart-readout";
   const cell = (tag: "td" | "th", text: string, className = "") => {
@@ -16,18 +18,25 @@ export function createChartReadout(rows: readonly ChartReadoutRow[], comparison?
     node.textContent = text;
     return node;
   };
-  if (comparison) {
+  if (comparison || target) {
     const head = document.createElement("thead"), row = document.createElement("tr");
-    const current = cell("th", comparison.current, "chart-readout-value");
-    const other = cell("th", comparison.other, "chart-readout-value");
-    current.scope = other.scope = "col";
-    row.append(cell("td", ""), current, other, cell("td", ""));
+    const heading = (text: string) => {
+      const node = cell("th", text, "chart-readout-value");
+      node.scope = "col";
+      row.append(node);
+    };
+    row.append(cell("td", ""));
+    if (comparison) heading(comparison.current);
+    else if (target) heading(target.current);
+    if (target) heading(target.target);
+    if (comparison) heading(comparison.other);
+    row.append(cell("td", ""));
     head.append(row);
     table.append(head);
   }
   const body = document.createElement("tbody");
   for (const data of rows) {
-    if (data.value == null && (!comparison || data.other == null)) continue;
+    if (data.value == null && (!comparison || data.other == null) && (!target || data.target == null)) continue;
     const row = document.createElement("tr");
     const label = cell("th", data.label, "chart-readout-label");
     label.scope = "row";
@@ -38,6 +47,7 @@ export function createChartReadout(rows: readonly ChartReadoutRow[], comparison?
     label.prepend(dot);
     const value = cell("td", data.value ?? "\u2014", "chart-readout-value chart-readout-current");
     row.append(label, value);
+    if (target) row.append(cell("td", data.target ?? "\u2014", "chart-readout-value"));
     if (comparison) row.append(cell("td", data.other ?? "\u2014", "chart-readout-value"));
     row.append(cell("td", data.unit, "chart-readout-unit"));
     body.append(row);

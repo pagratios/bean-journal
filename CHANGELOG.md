@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10
+
+- Show a Target column beside touched chart readings, using the current shot's recorded pressure, flow and
+  temperature targets at that time. Keep raw units, zero targets and missing readings in normal, full-screen and
+  comparison charts. Extend the shared core readout without changing existing callers.
+
 ## 0.1.9
 
 - Align touched chart values in shared numeric columns, with units in their own column. Comparison headers,

@@ -226,19 +226,29 @@ it as is. Only `src/core/` is in the package.
 
 ### Chart touch readout
 
-`createChartReadout(rows, comparison?)` and `CHART_READOUT_CSS` provide the shared browser readout layout.
+`createChartReadout(rows, comparison?, target?)` and `CHART_READOUT_CSS` provide the shared browser readout layout.
 Pass the function's `toString()` into the serialized page client and append the CSS after the page's base styles.
-Each row has `label`, `colour`, `unit`, a formatted `value` string or `null`, and an optional formatted `other`.
+Each row has `label`, `colour`, `unit`, a formatted `value` string or `null`, and optional formatted `other` and
+`target` strings (or `null`).
 Pass `{ current: "This shot", other: "Other shot" }` to show the comparison header and second numeric column.
+Pass `{ current: "Actual", target: "Target" }` as the third argument to insert a target column immediately after
+the current shot's actual values, before any comparison column. A comparison's `current` heading takes precedence.
+Omit that argument for the original layout; existing one- and two-argument callers are unchanged.
 The host supplies localized labels and number formatting, and decides which samples to show.
 
 One table shares column widths across every row and the header. Numbers are right-aligned with tabular digits;
 units occupy one separate trailing column and apply to both shots. Missing values show a dash without shifting
-columns; rows with no value in either displayed shot are omitted. Normal and full-screen charts use the same helper.
+columns; rows with no value in any displayed column are omitted. Normal and full-screen charts use the same helper.
 The renderer uses text nodes for all supplied text and has no module closures or browser globals at import time.
 
-These exports require an owner-approved feature merge and release after v0.1.8 before consumers can pin a released
-tag. Do not copy the renderer or patch an installed dependency while waiting for that release.
+The page reads current-shot `targetPressure`, `targetFlow` and `targetTemp` at the selected recorded sample index,
+in bar, ml/s and degrees Celsius, without the graph's temperature scaling. It never reconstructs a target from the
+profile's steps or uses the compared shot's targets. Missing samples and metrics without targets (weight and weight
+flow) show a dash; recorded zero remains zero. A recorded target can be shown even if its actual sample is missing.
+
+The original renderer is released in v0.1.9. The optional target column requires an owner-approved feature merge
+and release after v0.1.9 before consumers can pin it. Do not copy the renderer or patch an installed dependency
+while waiting for that release.
 
 ### Profile deletion
 
