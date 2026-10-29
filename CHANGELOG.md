@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+- Add `delete_profile` for full-access MCP clients, always requiring confirmation and a freshly read profile
+  revision. Use Decaid's soft deletion; keep shots and the loaded workflow, and refuse built-in profiles or a busy
+  machine. Export the product-neutral deletion runtime and MCP tool contract from the core.
+
 ## 0.1.7
 
 - Rate taste and body on five-step sliders, side by side on the tablet, with explicit clear buttons. Existing sour,

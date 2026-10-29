@@ -2,7 +2,7 @@
 // /api/v1/plugins/bean-journal.reaplugin/mcp with the token from the AI tab. The JSON-RPC server, access levels and
 // confirmations are the core's; these are Bean Journal's tools, each one or more of the page's own actions.
 import {
-  mcpMessage as coreMessage, mcpToolList as coreToolList, mcpTokenPattern,
+  DELETE_PROFILE_TOOL, mcpMessage as coreMessage, mcpToolList as coreToolList, mcpTokenPattern,
   type McpConfirm, type McpContext, type McpLevel, type McpSchema as Schema, type McpTool as Tool,
 } from "./core/mcp";
 import { BEVERAGES } from "./core/profiles";
@@ -270,6 +270,7 @@ export const MCP_TOOLS: Tool[] = [
     required: ["profile_id", "expected_updated_at"],
     call: (a) => ({ action: "update-profile", body: { profileId: a.profile_id, expectedUpdatedAt: a.expected_updated_at,
       ...pick(a, { ...profileNames, save_new: "saveNew" }) } }) },
+  DELETE_PROFILE_TOOL,
   { name: "update_preferences", level: "full", kind: "machine", title: "Change preferences",
     description: "Changes only the named preferences: what choosing a coffee on the page does, and the Bean Journal block in shot notes. No tokens, access levels or confirmation settings can be changed. Decaid reloads the plugin after saving.",
     properties: {

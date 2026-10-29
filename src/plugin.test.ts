@@ -172,6 +172,12 @@ function setup(settings: ObjectData = {}, world: World = {}) {
     m = /^\/profiles\/([^/]+)$/.exec(route);
     if (m) {
       const p = profiles.find((x) => x.id === decodeURIComponent(m![1]));
+      if (p && method === "DELETE") {
+        if (p.isDefault === true) return json({ error: "Built-in profile" }, 400);
+        p.visibility = "deleted";
+        p.updatedAt = stamp();
+        return new Response(null, { status: 204 });
+      }
       return p ? json(p) : json({ error: "Profile not found" }, 404);
     }
     if (route === `/plugins/${PLUGIN_ID}/settings` && method === "POST") {
@@ -978,6 +984,93 @@ describe("Bean Journal plugin", () => {
     expect(t.shots.has("a")).toBe(true);
     expect(await t.ok({ action: "delete-shot", shotId: "a", confirmed: true })).toEqual({ deleted: true });
     expect(t.shots.has("a")).toBe(false);
+  });
+
+  it("soft-deletes a confirmed profile without changing the loaded workflow or shots", async () => {
+    const t = setup();
+    const saved = { id: "profile:custom", visibility: "visible", updatedAt: "before", profile };
+    t.profiles.push(saved);
+    t.shots.set("a", makeShot("a", -10));
+    const before = structuredClone(t.workflow()), shots = [...t.shots.values()];
+    const b = { action: "delete-profile", profileId: saved.id, expectedUpdatedAt: saved.updatedAt };
+    expect((await t.control(b)).data.code).toBe("confirmation");
+    expect(saved.visibility).toBe("visible");
+    expect(await t.ok({ ...b, confirmed: true })).toEqual({ deleted: true, profileId: saved.id });
+    expect(saved.visibility).toBe("deleted");
+    expect((await t.ok({ action: "profiles" })).profiles.map((p: ObjectData) => p.id)).not.toContain(saved.id);
+    expect(t.workflow()).toEqual(before);
+    expect([...t.shots.values()]).toEqual(shots);
+    expect(t.calls.filter((c) => c.method === "DELETE")).toEqual([
+      { url: "http://localhost:8080/api/v1/profiles/profile%3Acustom", method: "DELETE", body: null },
+    ]);
+    expect((await t.control({ ...b, confirmed: true })).data.code).toBe("notFound");
+  });
+
+  it("refuses stale, missing, built-in and invalid profile deletions without writing", async () => {
+    const t = setup();
+    const saved = { id: "profile:custom", visibility: "hidden", updatedAt: "after", profile };
+    t.profiles.push(saved);
+    const b = { action: "delete-profile", profileId: saved.id, expectedUpdatedAt: "after", confirmed: true };
+    for (const [patch, code] of [
+      [{ expectedUpdatedAt: "before" }, "profileChanged"],
+      [{ expectedUpdatedAt: "" }, "invalidArguments"],
+      [{ expectedUpdatedAt: null }, "invalidArguments"],
+      [{ profileId: "../custom" }, "invalidId"],
+      [{ profileId: "profile:missing" }, "notFound"],
+      [{ profileId: t.profiles[0].id, expectedUpdatedAt: t.profiles[0].updatedAt }, "deleteDefaultProfile"],
+    ] as const) {
+      expect((await t.control({ ...b, ...patch })).data.code).toBe(code);
+    }
+    expect(t.calls.filter((c) => c.method === "DELETE")).toEqual([]);
+    expect(await t.ok(b)).toEqual({ deleted: true, profileId: saved.id });
+    expect(saved.visibility).toBe("deleted");
+  });
+
+  it.each(["espresso", "steam", "hotWater", "unknown"])("refuses profile deletion while the machine is %s", async (phase) => {
+    const t = setup({}, { phase });
+    t.profiles.push({ id: "profile:custom", visibility: "visible", updatedAt: "before", profile });
+    expect((await t.control({ action: "delete-profile", profileId: "profile:custom", expectedUpdatedAt: "before", confirmed: true })).data.code)
+      .toBe("machineBusy");
+    expect(t.calls.filter((c) => c.method === "DELETE")).toEqual([]);
+  });
+
+  it("serializes concurrent profile deletions so only one DELETE runs", async () => {
+    const t = setup();
+    t.profiles.push({ id: "profile:custom", visibility: "visible", updatedAt: "before", profile });
+    const b = { action: "delete-profile", profileId: "profile:custom", expectedUpdatedAt: "before", confirmed: true };
+    const answers = await Promise.all([t.control(b), t.control(b)]);
+    expect(answers[0].data).toEqual({ deleted: true, profileId: b.profileId });
+    expect(answers[1].data.code).toBe("notFound");
+    expect(t.calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("requires full MCP access, confirmation and the current revision end to end", async () => {
+    const t = setup({ McpAccess: "full", McpToken: token, McpPublicAccess: "shots", McpPublicToken: publicToken, McpConfirm: "none" });
+    const saved = { id: "profile:custom", visibility: "visible", updatedAt: "before", profile };
+    t.profiles.push(saved);
+    const call = async (name: string, args: ObjectData, accessToken = token) => {
+      const res = await t.plugin.__httpRequestHandler({ endpoint: "mcp", method: "POST",
+        headers: { host: "tablet:8080", "content-type": "application/json" }, query: { token: accessToken },
+        body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } } });
+      expect(res.status).toBe(200);
+      return JSON.parse(res.body).result;
+    };
+    const read = await call("list_profiles", { profile_id: saved.id });
+    expect(read.structuredContent).toMatchObject({ id: saved.id, updatedAt: "before", isDefault: false });
+    const args = { profile_id: saved.id, expected_updated_at: read.structuredContent.updatedAt };
+    expect(await call("delete_profile", { ...args, confirmed: true }, publicToken)).toMatchObject({ isError: true });
+    expect(await call("delete_profile", args)).toMatchObject({ structuredContent: { needs_confirmation: true } });
+    expect(t.calls.filter((c) => c.method === "DELETE")).toEqual([]);
+    saved.updatedAt = "after";
+    expect(await call("delete_profile", { ...args, confirmed: true }))
+      .toMatchObject({ isError: true, content: [{ text: texts.errors.profileChanged }] });
+    expect(t.calls.filter((c) => c.method === "DELETE")).toEqual([]);
+    const fresh = await call("list_profiles", { profile_id: saved.id });
+    const retry = { profile_id: saved.id, expected_updated_at: fresh.structuredContent.updatedAt };
+    expect(await call("delete_profile", retry)).toMatchObject({ structuredContent: { needs_confirmation: true } });
+    expect(await call("delete_profile", { ...retry, confirmed: true }))
+      .toMatchObject({ isError: false, structuredContent: { deleted: true, profileId: saved.id } });
+    expect(saved.visibility).toBe("deleted");
   });
 
   it("writes the notes block for Visualizer after a shot and a rating while the setting is on, and keeps the user's notes clean", async () => {

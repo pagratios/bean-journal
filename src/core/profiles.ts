@@ -1,5 +1,26 @@
 // Decaid profiles: steps checked against the machine's targets and limits, edits, a brew temperature, AI designs.
-import { items, number, object, text, type ObjectData } from "./data";
+import { items, number, object, profileId, text, type ObjectData } from "./data";
+
+export type ProfileDeleteRuntime = {
+  request: (path: string, method?: string, body?: unknown) => Promise<unknown>;
+  idle: () => Promise<void>;
+};
+
+/** Run inside the plugin's mutation queue. Decaid soft-deletes the library entry, not shots or the loaded workflow. */
+export async function deleteProfile(b: ObjectData, runtime: ProfileDeleteRuntime) {
+  if (b.confirmed !== true) throw new Error("confirmation");
+  const pid = profileId(b.profileId);
+  if (typeof b.expectedUpdatedAt !== "string" || !b.expectedUpdatedAt.trim()) throw new Error("invalidArguments");
+  await runtime.idle();
+  const path = `/profiles/${encodeURIComponent(pid)}`;
+  const saved = object(await runtime.request(path));
+  if (saved.id !== pid) throw new Error("invalidData");
+  if (saved.visibility === "deleted") throw new Error("notFound");
+  if (saved.updatedAt !== b.expectedUpdatedAt) throw new Error("profileChanged");
+  if (saved.isDefault === true) throw new Error("deleteDefaultProfile");
+  await runtime.request(path, "DELETE");
+  return { deleted: true, profileId: pid };
+}
 
 /** Every step `delta` °C warmer (or cooler), so a profile's rises and falls stay; null when a step leaves 0–100 °C. */
 export function shiftedSteps(steps: ObjectData[], delta: number): ObjectData[] | null {

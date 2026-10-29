@@ -76,7 +76,7 @@ explicitly with `load_profile`, takes precedence and becomes the new remembered 
 | A shot's rating | Decaid's own fields: `enjoyment` (score ÷ 10), `espressoNotes`, `drinkTds`, `drinkEy`, actual dose and yield; taste and body in `annotations.extras.beanJournal`. Grinder, grind and RPM (`extras.rpm`) on the shot's workflow context. |
 
 Bean Journal never deletes beans, batches or grinders: a grinder put away in Settings is archived in Decaid (shots
-made with it keep it). It deletes a shot only when you confirm it.
+made with it keep it). It deletes a shot or soft-deletes a saved profile only when you confirm it.
 
 **Freeze / Thaw** on a coffee's page applies to the whole bag, dated today on the tablet. Refreezing keeps the last
 completed stay in the earlier total and clears the old thaw date. The edit form starts a new stay the same way; its
@@ -114,14 +114,20 @@ the same checks apply.
   Clients send it as `Authorization: Bearer <token>`, or `?token=` when they can't set headers. Off or a wrong token
   is a bare 404. **New token** cancels the old one.
 - **Ask me before:** tools of a gated kind answer `needs_confirmation` and do nothing; the assistant asks you in the
-  chat and calls again with `confirmed: true`. `delete_shot` always asks. Tokens, levels and confirmation settings
+  chat and calls again with `confirmed: true`. `delete_shot` and `delete_profile` always ask, even with optional
+  confirmations disabled. Tokens, levels and confirmation settings
   can only be changed on the tablet.
 
 | Level | Tools (each level includes the one before) |
 | --- | --- |
 | Read only | `get_status`, `get_dial_in_context`, `list_coffees`, `get_shot`, `list_shots`, `list_profiles`, `list_equipment`, `get_preferences`, `get_refractometer` |
 | Shots and coffee | `rate_shot`, `delete_shot`, `measure_tds`, `set_next_shot`, `add_coffee`, `update_coffee` |
-| Everything | `create_profile`, `update_profile`, `update_preferences`, `search_refractometer`, `choose_coffee`, `load_profile`, `load_shot_settings` |
+| Everything | `create_profile`, `update_profile`, `delete_profile`, `update_preferences`, `search_refractometer`, `choose_coffee`, `load_profile`, `load_shot_settings` |
+
+For `delete_profile`, first read `list_profiles(profile_id)` and pass that record's `updatedAt` as
+`expected_updated_at`, together with `profile_id`. Ask the user before retrying with `confirmed: true`.
+Changed, missing, already deleted and built-in profiles are refused. The machine must be idle. Decaid soft-deletes
+only the library entry; historical shots and the loaded workflow are left unchanged.
 
 `add_coffee` and `update_coffee` take every field Decaid has for a coffee and its bag, and `photo`: an https image
 address (kept as it is and shown from the web; Decaid's plugins can't download an image) or a
@@ -217,6 +223,26 @@ and its build reads the theme with
 
 The package is TypeScript source (no build step); a bundler such as esbuild and `"moduleResolution": "bundler"` read
 it as is. Only `src/core/` is in the package.
+
+### Profile deletion
+
+`DELETE_PROFILE_TOOL` is a product-neutral `McpTool` for `delete_profile`: full access, machine/profile mutation
+permissions, and mandatory confirmation even with `confirm: "none"`. Include it in the host's MCP tool array.
+It maps `{ profile_id, expected_updated_at, confirmed: true }` to the host action
+`delete-profile` with `{ profileId, expectedUpdatedAt, confirmed: true }`.
+
+Exported `deleteProfile(body, { request, idle })` implements that action. Call it inside the host's mutation queue;
+`request` is its Decaid REST adapter and `idle` is its existing machine-safety guard. It validates confirmation,
+the profile id and revision, checks safety, reads `/profiles/{encoded id}`, refuses changed/deleted/built-in
+records, then sends `DELETE` to that path. Success is `{ deleted: true, profileId }`; empty DELETE responses are
+supported. It never writes `/workflow` or shots. Errors use the existing `confirmation`, `invalidId`,
+`invalidArguments`, `invalidData`, `notFound`, `profileChanged` keys, plus `deleteDefaultProfile`; REST and safety
+errors propagate to the host's normal error handling. Supply localized text for the new error key.
+
+The revision check follows existing profile edits: it detects changes since the assistant's read, but Decaid's
+DELETE API offers no atomic revision precondition, so a change between the final read and DELETE cannot be excluded.
+These exports are unreleased; a consumer requiring released tags must wait for an owner-approved feature merge
+and release through the documented process, then bump its pin. No existing release contains this capability.
 
 ### Taste/body sliders and choice dialogs
 
