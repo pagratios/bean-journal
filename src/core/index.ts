@@ -5,6 +5,7 @@ export * from "./decaid";
 export * from "./shots";
 export * from "./rating-controls";
 export * from "./choice-dialog";
+export * from "./chart-readout";
 export * from "./profiles";
 export * from "./surfaces";
 export * from "./ratio-memory";
