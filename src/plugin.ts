@@ -9,6 +9,7 @@ import {
 } from "./coffees";
 import { round1, skinSurfaces } from "./skin";
 import { decaid } from "./core/decaid";
+import { deleteProfile } from "./core/profiles";
 import { createRatioMemory, type RatioChange } from "./core/ratio-memory";
 import { createCoffeeHistory, sortCoffees } from "./core/coffee-order";
 import { copy, page } from "./ui";
@@ -1225,6 +1226,7 @@ export function createPlugin(host: Host) {
       case "profile": return profileOne(b.profileId);
       case "create-profile": return serial(() => createProfile(b));
       case "update-profile": return serial(() => updateProfile(b));
+      case "delete-profile": return serial(() => deleteProfile(b, { request: local, idle }));
       case "load-profile":
         if (b.confirmed !== true) throw new Error("confirmation");
         return serial(() => loadProfile(b));

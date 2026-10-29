@@ -56,7 +56,7 @@ describe("MCP messages", () => {
     expect(names("read")).toEqual(["get_status", "get_dial_in_context", "list_coffees", "get_shot", "list_shots", "list_profiles",
       "list_equipment", "get_preferences", "get_refractometer"]);
     expect(names("shots")).toEqual([...names("read"), "rate_shot", "delete_shot", "measure_tds", "set_next_shot", "add_coffee", "update_coffee"]);
-    expect(names("full")).toEqual([...names("shots"), "create_profile", "update_profile", "update_preferences", "search_refractometer",
+    expect(names("full")).toEqual([...names("shots"), "create_profile", "update_profile", "delete_profile", "update_preferences", "search_refractometer",
       "choose_coffee", "load_profile", "load_shot_settings"]);
     expect(names("full")).toHaveLength(MCP_TOOLS.length);
     for (const tool of mcpToolList("full")) expect(tool.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
@@ -90,6 +90,34 @@ describe("MCP messages", () => {
     expect(mcpToolList("full", "none").find((t) => t.name === "delete_shot")!.annotations.destructiveHint).toBe(true);
     // The shot id alone: there is no remote copy to name.
     expect(Object.keys(props("delete_shot", "none"))).toEqual(["shot_id", "confirmed"]);
+  });
+
+  it.each(["none", "changes", "all"] as const)("always confirms profile deletion with confirmation mode %s", async (confirm) => {
+    const ctx = context({ level: "full", confirm });
+    const args = { profile_id: "profile:p", expected_updated_at: "before" };
+    for (const confirmed of [undefined, false, "true", 1]) {
+      expect(await mcpMessage(call("delete_profile", { ...args, confirmed }), ctx))
+        .toMatchObject({ result: { structuredContent: { needs_confirmation: true, arguments: args } } });
+    }
+    expect(ctx.act).not.toHaveBeenCalled();
+    await mcpMessage(call("delete_profile", { ...args, confirmed: true }), ctx);
+    expect(ctx.act).toHaveBeenCalledExactlyOnceWith("delete-profile", {
+      action: "delete-profile", profileId: "profile:p", expectedUpdatedAt: "before", confirmed: true,
+    });
+    expect(props("delete_profile", confirm)).toHaveProperty("confirmed");
+    expect(mcpToolList("full", confirm).find((t) => t.name === "delete_profile"))
+      .toMatchObject({ annotations: { destructiveHint: true, readOnlyHint: false }, inputSchema: { required: ["profile_id", "expected_updated_at"] } });
+  });
+
+  it("requires both deletion identifiers and applies the mutation rate limit", async () => {
+    const ctx = context({ level: "full", allowChange: () => false });
+    for (const args of [{ profile_id: "profile:p" }, { expected_updated_at: "before" }]) {
+      expect(await mcpMessage(call("delete_profile", { ...args, confirmed: true }), ctx))
+        .toMatchObject({ result: { isError: true } });
+    }
+    expect(await mcpMessage(call("delete_profile", { profile_id: "profile:p", expected_updated_at: "before", confirmed: true }), ctx))
+      .toMatchObject({ result: { isError: true, content: [{ text: "Too many" }] } });
+    expect(ctx.act).not.toHaveBeenCalled();
   });
 
   it("maps full profile edits and exposes exactly the Decaid beverage categories", async () => {

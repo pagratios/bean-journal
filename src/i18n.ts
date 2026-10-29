@@ -291,7 +291,7 @@ const en = {
   "mcpFull": "Everything",
   "mcpReadHelp": "Read shots, coffees, profiles, grinders, waters, preferences and TDS sensors. Nothing changes.",
   "mcpShotsHelp": "Also rate and correct shots, add and edit coffees, choose the next coffee and its grinder, RPM and water, and measure TDS. Deleting a shot always asks first.",
-  "mcpFullHelp": "Also create and edit profiles, load settings (never starts a shot), change preferences and search for an R2. Tokens and AI access stay here.",
+  "mcpFullHelp": "Also create, edit and delete profiles, load settings (never starts a shot), change preferences and search for an R2. Tokens and AI access stay here.",
   "mcpAddress": "Address",
   "mcpLocalhost": "Use the tablet's address on your network instead of localhost.",
   "mcpToken": "Token",
@@ -304,7 +304,7 @@ const en = {
   "mcpConfirmNone": "Nothing",
   "mcpConfirmChanges": "Machine and profile changes",
   "mcpConfirmAll": "Every change",
-  "mcpConfirmHelp": "The assistant asks in the chat first. Deleting a shot always asks. The phone apps also ask before machine and profile changes.",
+  "mcpConfirmHelp": "The assistant asks in the chat first. Deleting a shot or profile always asks. The phone apps also ask before machine and profile changes.",
   "mcpPublic": "Phone apps (Claude, ChatGPT)",
   "mcpPublicHelp": "Their connectors call from the vendor's servers, so they need a public address: a Tailscale Funnel on an always-on computer at home that forwards only this path to the tablet. Its own token and level; keep it low.",
   "mcpPublicUrl": "Public address",
@@ -337,7 +337,7 @@ const en = {
     ],
     "McpConfirm": [
       "AI assistants ask before",
-      "none; changes: machine and profile changes; all: every change. Deleting a shot always asks. Set on the AI tab."
+      "none; changes: machine and profile changes; all: every change. Deleting a shot or profile always asks. Set on the AI tab."
     ],
     "McpPublicAccess": [
       "Phone apps (MCP)",
@@ -371,7 +371,7 @@ const en = {
     "keepOffTitle": "Keep ratio: tap so that a new dose moves the drink with it."
   },
   "mcpConfirmSays": "Nothing was done. Tell the user what this would do and ask; if they agree, call it again with the same arguments and confirmed: true.",
-  "mcpInstructions": "Bean Journal on a Decent espresso machine's tablet (Decaid). Shots, profiles, coffees (Decaid beans and their bags) and grinders are all on the tablet; there is no account or cloud. Before update_profile, read list_profiles(profile_id) and pass updatedAt. Never start a shot. Ask before loading, replacing, creating or deleting data. Tokens and AI access can only be changed on the tablet. Name shots by their time, not their id.",
+  "mcpInstructions": "Bean Journal on a Decent espresso machine's tablet (Decaid). Shots, profiles, coffees (Decaid beans and their bags) and grinders are all on the tablet; there is no account or cloud. Before update_profile or delete_profile, read list_profiles(profile_id) and pass updatedAt. Never start a shot. Ask before loading, replacing, creating or deleting data. Tokens and AI access can only be changed on the tablet. Name shots by their time, not their id.",
   "errors": {
     "invalidData": "Decaid returned unexpected data.",
     "invalidId": "The identifier is missing or invalid.",
@@ -391,7 +391,8 @@ const en = {
     "missingName": "A coffee needs a roaster and a name.",
     "invalidFreezerDates": "Check the bag's freezer dates in Edit: no future or reversed dates, and a new freeze must follow its last thaw. Complete the last pair before refreezing, or clear both if entered by mistake.",
     "notAssistantProfile": "Only a profile an AI assistant made can be replaced. Save it as a new profile instead.",
-    "profileChanged": "This profile changed since you read it. Read it again before confirming the edit.",
+    "profileChanged": "This profile changed since you read it. Read it again before confirming the change.",
+    "deleteDefaultProfile": "Built-in profiles cannot be deleted.",
     "workflowChanged": "The next shot changed while its settings were being read. Try again.",
     "coffeeHistoryChanged": "Shot history kept changing while coffee order was read. Try again.",
     "defaultProfile": "Built-in profiles cannot be renamed or annotated in place. Change the design to save a child profile; the built-in stays.",

@@ -39,6 +39,18 @@ export type McpTool = {
   shape?: (result: unknown, a: ObjectData) => unknown;
 };
 
+/** Shared contract for the host's serialized delete-profile action and the profile deletion runtime. */
+export const DELETE_PROFILE_TOOL: McpTool = {
+  name: "delete_profile", level: "full", kind: "machine", alwaysConfirm: true, title: "Delete a profile",
+  description: "Soft-deletes a saved Decaid profile from the library, not shots or the loaded workflow. Built-in and already deleted profiles are refused. First read list_profiles(profile_id) and pass updatedAt; changed profiles are refused. Always ask the user before confirming, even when optional confirmations are off. The machine must be idle.",
+  properties: {
+    profile_id: { type: "string", description: "The Decaid profile id just read with list_profiles(profile_id)." },
+    expected_updated_at: { type: "string", description: "The updatedAt just read; reread and ask again if the profile changed." },
+  },
+  required: ["profile_id", "expected_updated_at"],
+  call: (a) => ({ action: "delete-profile", body: { profileId: a.profile_id, expectedUpdatedAt: a.expected_updated_at, confirmed: true } }),
+};
+
 const allows = (level: McpLevel, need: McpTool["level"]) => MCP_LEVELS.indexOf(level) >= MCP_LEVELS.indexOf(need);
 const asks = (confirm: McpConfirm, tool: McpTool) => tool.alwaysConfirm === true || (tool.kind !== "read" && (confirm === "all" || (confirm === "changes" && tool.kind === "machine")));
 const CONFIRMED: McpSchema = { type: "boolean", description: "true only after the user agreed to this call (it answered needs_confirmation)." };
