@@ -20,15 +20,17 @@ export function createChartReadout(rows: readonly ChartReadoutRow[], comparison?
   };
   if (comparison || target) {
     const head = document.createElement("thead"), row = document.createElement("tr");
-    const heading = (text: string) => {
-      const node = cell("th", text, "chart-readout-value");
+    const heading = (text: string, className = "chart-readout-value") => {
+      const node = cell("th", text, className);
       node.scope = "col";
       row.append(node);
     };
     row.append(cell("td", ""));
-    if (comparison) heading(comparison.current);
-    else if (target) heading(target.current);
-    if (target) heading(target.target);
+    if (target) {
+      heading(target.current);
+      heading("/", "chart-readout-slash");
+      heading(target.target, "chart-readout-value chart-readout-target");
+    } else if (comparison) heading(comparison.current);
     if (comparison) heading(comparison.other);
     row.append(cell("td", ""));
     head.append(row);
@@ -47,7 +49,8 @@ export function createChartReadout(rows: readonly ChartReadoutRow[], comparison?
     label.prepend(dot);
     const value = cell("td", data.value ?? "\u2014", "chart-readout-value chart-readout-current");
     row.append(label, value);
-    if (target) row.append(cell("td", data.target ?? "\u2014", "chart-readout-value"));
+    if (target) row.append(cell("td", data.target == null ? "" : "/", "chart-readout-slash"),
+      cell("td", data.target ?? "", "chart-readout-value chart-readout-target"));
     if (comparison) row.append(cell("td", data.other ?? "\u2014", "chart-readout-value"));
     row.append(cell("td", data.unit, "chart-readout-unit"));
     body.append(row);
@@ -62,6 +65,8 @@ export const CHART_READOUT_CSS = `
 .chart-readout th,.chart-readout td{padding:0;font-weight:400}
 .chart-readout .chart-readout-label{text-align:left}
 .chart-readout .chart-readout-value{text-align:right;padding-left:0.667rem}
+.chart-readout .chart-readout-slash{text-align:center;padding:0 0.2rem;color:var(--muted)}
+.chart-readout .chart-readout-target{padding-left:0}
 .chart-readout .chart-readout-current{font-weight:650}
 .chart-readout thead{color:var(--muted)}
 .chart-readout .chart-readout-unit{text-align:left;padding-left:0.333rem}

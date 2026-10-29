@@ -72,7 +72,7 @@ describe("chart touch readout", () => {
     expect(table.children[1].children.every((row) => row.children[2].textContent === "\u2014")).toBe(true);
   });
 
-  it.each([false, true])("inserts current-shot targets beside actual values with comparison=%s", (compare) => {
+  it.each([false, true])("shares actual/slash/target tracks, omitting missing targets with comparison=%s", (compare) => {
     vi.stubGlobal("document", documentStub);
     const data: ChartReadoutRow[] = [
       { ...rows[0], target: "0" },
@@ -86,17 +86,36 @@ describe("chart touch readout", () => {
       { current: "Measured", target: "Goal" }) as unknown as Node;
     const [head, body] = table.children;
     expect(head.children[0].children.map((cell) => cell.textContent)).toEqual(
-      compare ? ["", "This shot", "Goal", "Other shot", ""] : ["", "Measured", "Goal", ""]);
+      compare ? ["", "Measured", "/", "Goal", "Other shot", ""] : ["", "Measured", "/", "Goal", ""]);
     expect(head.children[0].children.slice(1, -1).every((cell) => cell.scope === "col")).toBe(true);
     expect(body.children.map((row) => row.children.map((cell) => cell.textContent))).toEqual(compare ? [
-      ["Pressure", "9", "0", "10.25", "bar"], ["Flow", "0.12", "\u2014", "\u2014", "ml/s"],
-      ["Weight flow", "\u2014", "\u2014", "2.5", "g/s"], ["Weight", "123.4", "\u2014", "0", "g"],
-      ["Temperature", "93.1", "94.5", "101", "\u00b0C"], ["Missing", "\u2014", "6", "\u2014", "g"],
+      ["Pressure", "9", "/", "0", "10.25", "bar"], ["Flow", "0.12", "", "", "\u2014", "ml/s"],
+      ["Weight flow", "\u2014", "", "", "2.5", "g/s"], ["Weight", "123.4", "", "", "0", "g"],
+      ["Temperature", "93.1", "/", "94.5", "101", "\u00b0C"], ["Missing", "\u2014", "/", "6", "\u2014", "g"],
     ] : [
-      ["Pressure", "9", "0", "bar"], ["Flow", "0.12", "\u2014", "ml/s"],
-      ["Weight", "123.4", "\u2014", "g"], ["Temperature", "93.1", "94.5", "\u00b0C"],
-      ["Missing", "\u2014", "6", "g"],
+      ["Pressure", "9", "/", "0", "bar"], ["Flow", "0.12", "", "", "ml/s"],
+      ["Weight", "123.4", "", "", "g"], ["Temperature", "93.1", "/", "94.5", "\u00b0C"],
+      ["Missing", "\u2014", "/", "6", "g"],
     ]);
+    for (const row of body.children) {
+      expect(row.children[1].className).toBe("chart-readout-value chart-readout-current");
+      expect(row.children[2].className).toBe("chart-readout-slash");
+      expect(row.children[3].className).toBe("chart-readout-value chart-readout-target");
+      expect(row.children).toHaveLength(compare ? 6 : 5);
+    }
+  });
+
+  it.each([false, true])("keeps all actuals on their track when every target is absent with comparison=%s", (compare) => {
+    vi.stubGlobal("document", documentStub);
+    const table = createChartReadout(rows, compare ? comparison : undefined,
+      { current: "Actual", target: "Target" }) as unknown as Node;
+    expect(table.children[0].children[0].children.map((cell) => cell.textContent)).toEqual(
+      compare ? ["", "Actual", "/", "Target", "Other shot", ""] : ["", "Actual", "/", "Target", ""]);
+    for (const row of table.children[1].children) {
+      expect(row.children[2].textContent).toBe("");
+      expect(row.children[3].textContent).toBe("");
+      expect(row.children[1].className).toBe("chart-readout-value chart-readout-current");
+    }
   });
 
   it("ignores targets unless the caller opts in, preserving the original layout and omission rules", () => {
@@ -116,8 +135,9 @@ describe("chart touch readout", () => {
     expect(row.children[0].textContent).toBe("<b>Pressure</b>");
     expect(row.children[1].textContent).toBe("<img>");
     expect(row.children[1].children).toEqual([]);
-    expect(row.children[2].textContent).toBe("<target>");
-    expect(row.children[2].children).toEqual([]);
-    expect(table.children[0].children[0].children[2].textContent).toBe("<Goal>");
+    expect(row.children[2].textContent).toBe("/");
+    expect(row.children[3].textContent).toBe("<target>");
+    expect(row.children[3].children).toEqual([]);
+    expect(table.children[0].children[0].children[3].textContent).toBe("<Goal>");
   });
 });
