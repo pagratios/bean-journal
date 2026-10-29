@@ -5,7 +5,8 @@ import { runInNewContext } from "node:vm";
 import { transformSync } from "esbuild";
 import { texts } from "./i18n";
 import { page } from "./ui";
-import { askChoices, CHOICE_DIALOG_CSS, createPointerGuard, createRatingSlider, RATING_SLIDER_CSS } from "./core";
+import { askChoices, CHOICE_DIALOG_CSS, createPointerGuard, createRatingSlider, RATING_SLIDER_CSS,
+  createChartReadout, CHART_READOUT_CSS } from "./core";
 
 const source = readFileSync(resolve("src", "ui.ts"), "utf8");
 const theme = readFileSync(resolve("src", "core", "theme.css"), "utf8");
@@ -121,6 +122,16 @@ describe("the page", () => {
     expect(source).toContain("return showChoices(text, choices, dismiss)");
     expect(html).toContain('"sour-balanced"');
     expect(html).toContain('"medium-heavy"');
+  });
+
+  it("uses the shared chart readout for both normal and comparison values", () => {
+    const html = render();
+    expect(html).toContain(createChartReadout.toString());
+    expect(html).toContain(CHART_READOUT_CSS);
+    expect(source).toContain("const rowsBox = makeChartReadout(rows.map(");
+    expect(source).toContain("other ? { current: t.thisShot, other: t.otherShot } : undefined");
+    expect(source).not.toContain("readout-cols");
+    expect(source).not.toContain('el("div", "readout-row")');
   });
 });
 

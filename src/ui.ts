@@ -3,6 +3,7 @@ import { createPointerGuard } from "./core/pointer-guard";
 import { BALANCES, BODIES, type Balance, type BodyLevel } from "./core/shots";
 import { createRatingSlider, RATING_SLIDER_CSS } from "./core/rating-controls";
 import { askChoices, CHOICE_DIALOG_CSS, type DialogChoice } from "./core/choice-dialog";
+import { createChartReadout, CHART_READOUT_CSS } from "./core/chart-readout";
 
 export type { Copy };
 declare const __DECAID_COPY__: Copy;
@@ -13,7 +14,7 @@ export function copy(): Copy {
 
 // Serialized into the page: browser helpers must remain inside this function.
 function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRatingSlider: typeof createRatingSlider,
-  showChoices: typeof askChoices, balances: typeof BALANCES, bodies: typeof BODIES) {
+  showChoices: typeof askChoices, makeChartReadout: typeof createChartReadout, balances: typeof BALANCES, bodies: typeof BODIES) {
   type Data = Record<string, unknown>;
   type Coffee = {
     id: string; beanId: string; batchId: string | null; roaster: string; name: string;
@@ -776,33 +777,15 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
       const step = [...steps].reverse().find((s) => s.t <= time + 0.05);
       const head = el("div", "readout-time", `${fmt(time, 1)} s`);
       if (step) head.append(el("span", "muted", ` · ${step.name || `${t.step} ${step.frame + 1}`}`));
-      const rowsBox = el("div", "readout-rows");
       // Comparing: the other shot at the same second, after this one's value (nothing once it had ended).
       const j = other && time <= other.t[other.t.length - 1] + 0.3 ? nearest(time, other.t) : -1;
-      if (other) {
-        const head2 = el("div", "readout-row readout-cols");
-        head2.append(el("span", ""), el("span", "muted", t.thisShot), el("span", "muted", t.otherShot));
-        rowsBox.append(head2);
-      }
-      for (const [key, label, unit] of rows) {
+      const rowsBox = makeChartReadout(rows.map(([key, label, unit]) => {
         const v = values(key)[i];
         const w = j >= 0 ? otherValues(key)[j] : null;
-        if ((v === null || v === undefined) && (w === null || w === undefined)) continue;
         const digits = key === "temp" || key === "weight" ? 1 : 2;
-        const name = el("span", "", label), dot = el("i", "dot");
-        dot.style.background = colours[key] ?? "";
-        name.prepend(dot);
-        if (other) {
-          const row = el("div", "readout-row readout-cols");
-          row.append(name, el("strong", "", v === null || v === undefined ? "—" : `${fmt(v, digits)} ${unit}`), el("span", "", w === null || w === undefined ? "—" : fmt(w, digits)));
-          rowsBox.append(row);
-          continue;
-        }
-        if (v === null || v === undefined) continue;
-        const row = el("div", "readout-row");
-        row.append(name, el("strong", "", `${fmt(v, digits)} ${unit}`));
-        rowsBox.append(row);
-      }
+        return { label, unit, colour: colours[key] ?? "", value: v == null ? null : fmt(v, digits),
+          other: w == null ? null : fmt(w, digits) };
+      }), other ? { current: t.thisShot, other: t.otherShot } : undefined);
       card.replaceChildren(head, rowsBox);
       card.hidden = false;
       // The card sits on the side away from the finger.
@@ -2671,12 +2654,12 @@ dt{font-size:0.8rem;color:var(--muted)}dd{margin:0;font-size:1rem;font-weight:65
 .chart-box{position:relative}.chart{touch-action:pan-y;cursor:crosshair;user-select:none;-webkit-user-select:none}.step-line{stroke:var(--muted);stroke-width:1.2;stroke-dasharray:1 4;opacity:.8}
 .cursor line{stroke:var(--ink);stroke-width:1;opacity:.6}.cursor circle{stroke:var(--surface);stroke-width:1.5}
 .readout{position:absolute;top:0.4rem;min-width:9.5rem;max-width:55%;padding:0.4rem 0.533rem;border:1px solid var(--ui-divider);border-radius:0.533rem;background:var(--surface);box-shadow:var(--ui-shadow);font-size:0.8rem;pointer-events:none}.readout[hidden]{display:none}.readout.left{left:2.2rem}.readout.right{right:5.8rem}
-.readout-time{font-weight:700;margin-bottom:0.133rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.readout-row{display:flex;justify-content:space-between;gap:0.667rem;white-space:nowrap}.readout-row strong{font-weight:650}.readout-cols{display:grid;grid-template-columns:auto auto auto;gap:0.667rem}.readout-cols>*:not(:first-child){text-align:right}
+.readout-time{font-weight:700;margin-bottom:0.133rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dd-shot-set{min-height:2.133rem;font-size:0.867rem;max-width:14rem;margin-left:auto}button.dd-shot-set{background:var(--accent-soft);color:var(--accent);border-bottom-color:transparent}button.compare-select{display:flex;width:auto;max-width:min(100% - 0.933rem,24rem);margin-top:0.533rem;min-height:2.133rem;font-size:0.867rem;background:transparent;color:var(--accent);border-bottom-color:transparent}.chart-slot{min-width:0}
 /* Moving through the history is navigation, so text; loading a shot for the next one is the bar's real action. */
 .shot-bar #older,.shot-bar #newer,.shot-bar #latest{background:transparent}
 .key.cmp::before{background:repeating-linear-gradient(90deg,var(--muted) 0 5px,transparent 5px 8px)}.key[hidden]{display:none}
-.curve.compare{stroke-width:1.6;stroke-dasharray:5 3;opacity:.55}.readout-row .dot{display:inline-block;width:0.533rem;height:0.533rem;border-radius:50%;margin-right:0.333rem;vertical-align:middle}
+.curve.compare{stroke-width:1.6;stroke-dasharray:5 3;opacity:.55}
 .legend{display:flex;flex-wrap:wrap;gap:0.267rem 0.933rem;font-size:0.8rem;color:var(--muted);margin-top:0.533rem}.key::before{content:"";display:inline-block;width:0.933rem;height:0.267rem;border-radius:2px;margin-right:0.333rem;vertical-align:middle}
 .key.p::before{background:var(--c-pressure)}.key.f::before{background:var(--c-flow)}.key.w::before{background:var(--c-weight)}.key.wf::before{background:var(--c-weight-flow)}.key.c::before{background:var(--c-temp)}.key.dash::before{background:repeating-linear-gradient(90deg,var(--muted) 0 3px,transparent 3px 6px)}.key.dots::before{width:0.267rem;height:0.933rem;background:repeating-linear-gradient(0deg,var(--muted) 0 2px,transparent 2px 5px)}
 .rate{display:grid;gap:0.533rem}.score-row,.extra-row{display:flex;gap:0.533rem;align-items:center;flex-wrap:wrap}.rate .label{margin:0}
@@ -2777,6 +2760,7 @@ html.gear-only,html.gear-only body{background:transparent!important;color-scheme
 @media (prefers-reduced-motion:reduce){button,.button,input.sw,input.sw::before,.dd-chevron,.combo-open svg{transition:none}.r2.measuring svg{animation:none}}
 @media (max-width:60rem){header{flex-wrap:wrap}#next-coffee{flex-basis:100%;order:3;margin-left:0}#view-shot{grid-template-columns:1fr;grid-template-rows:auto auto minmax(0,1fr)}.shot-bar,#shot-body>.chart-wrap,.shot-side{grid-column:1;grid-row:auto}.numbers{grid-template-columns:repeat(3,1fr)}.form-cols{grid-template-columns:1fr}}
 ${RATING_SLIDER_CSS}
+${CHART_READOUT_CSS}
 ${CHOICE_DIALOG_CSS}
 </style></head><body>
 <button type="button" id="leave" aria-label="${esc(t.close)}" hidden>×</button>
@@ -2845,5 +2829,5 @@ ${CHOICE_DIALOG_CSS}
 <dialog id="picker"><div class="dialog-head"><h2>${esc(t.chooseCoffee)}</h2><label class="switch finished"><input type="checkbox" class="sw" id="picker-finished"> ${esc(t.showFinished)}</label><button type="button" id="picker-add" class="secondary">+ ${esc(t.addCoffee)}</button><button type="button" id="picker-close" class="secondary">${esc(t.close)}</button></div><div class="toolbar"><div id="picker-filters" class="filters"></div><input id="picker-search" type="search" placeholder="${esc(t.searchPlaceholder)}" aria-label="${esc(t.searchPlaceholder)}"><button type="button" id="picker-clear" class="secondary clear-filters" hidden>${esc(t.clearFilters)}</button><span id="picker-hint" class="muted">${esc(t.pickerHint)}</span></div><div id="picker-history" class="coffee-history" role="status" aria-live="polite" hidden></div><div id="picker-list"></div></dialog>
 </main>
 <footer id="actions" hidden><span id="unsaved-note" class="pill unsaved" role="status" hidden>${esc(t.unsaved)}</span><button type="button" id="act-cancel" class="secondary">${esc(t.cancel)}</button><button type="button" id="act-back" class="secondary" hidden>← ${esc(t.back)}</button><button type="button" id="act-done">${esc(t.done)}</button></footer>
-<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()}, ${createRatingSlider.toString()}, ${askChoices.toString()}, ${JSON.stringify(BALANCES)}, ${JSON.stringify(BODIES)});</script></body></html>`;
+<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()}, ${createRatingSlider.toString()}, ${askChoices.toString()}, ${createChartReadout.toString()}, ${JSON.stringify(BALANCES)}, ${JSON.stringify(BODIES)});</script></body></html>`;
 }

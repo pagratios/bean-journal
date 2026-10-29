@@ -224,6 +224,22 @@ and its build reads the theme with
 The package is TypeScript source (no build step); a bundler such as esbuild and `"moduleResolution": "bundler"` read
 it as is. Only `src/core/` is in the package.
 
+### Chart touch readout
+
+`createChartReadout(rows, comparison?)` and `CHART_READOUT_CSS` provide the shared browser readout layout.
+Pass the function's `toString()` into the serialized page client and append the CSS after the page's base styles.
+Each row has `label`, `colour`, `unit`, a formatted `value` string or `null`, and an optional formatted `other`.
+Pass `{ current: "This shot", other: "Other shot" }` to show the comparison header and second numeric column.
+The host supplies localized labels and number formatting, and decides which samples to show.
+
+One table shares column widths across every row and the header. Numbers are right-aligned with tabular digits;
+units occupy one separate trailing column and apply to both shots. Missing values show a dash without shifting
+columns; rows with no value in either displayed shot are omitted. Normal and full-screen charts use the same helper.
+The renderer uses text nodes for all supplied text and has no module closures or browser globals at import time.
+
+These exports require an owner-approved feature merge and release after v0.1.8 before consumers can pin a released
+tag. Do not copy the renderer or patch an installed dependency while waiting for that release.
+
 ### Profile deletion
 
 `DELETE_PROFILE_TOOL` is a product-neutral `McpTool` for `delete_profile`: full access, machine/profile mutation

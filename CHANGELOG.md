@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9
+
+- Align touched chart values in shared numeric columns, with units in their own column. Comparison headers,
+  different digit widths and missing values stay aligned in normal and full-screen charts. Export the shared
+  readout renderer and layout from the core.
+
 ## 0.1.8
 
 - Add `delete_profile` for full-access MCP clients, always requiring confirmation and a freshly read profile
