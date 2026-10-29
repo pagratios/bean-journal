@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11
+
+- Present touched chart readings as compact Actual / Target pairs with shared numeric and slash alignment.
+  Omit the slash and target where no target was recorded, while preserving zero targets and target-only readings.
+  Keep the other shot's actuals separate and existing non-target callers unchanged.
+
 ## 0.1.10
 
 - Show a Target column beside touched chart readings, using the current shot's recorded pressure, flow and

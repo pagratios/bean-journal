@@ -231,8 +231,8 @@ Pass the function's `toString()` into the serialized page client and append the 
 Each row has `label`, `colour`, `unit`, a formatted `value` string or `null`, and optional formatted `other` and
 `target` strings (or `null`).
 Pass `{ current: "This shot", other: "Other shot" }` to show the comparison header and second numeric column.
-Pass `{ current: "Actual", target: "Target" }` as the third argument to insert a target column immediately after
-the current shot's actual values, before any comparison column. A comparison's `current` heading takes precedence.
+Pass `{ current: "Actual", target: "Target" }` as the third argument to show the current shot's compact
+`Actual / Target` pair before any comparison column. These headings take precedence over a comparison's `current`.
 Omit that argument for the original layout; existing one- and two-argument callers are unchanged.
 The host supplies localized labels and number formatting, and decides which samples to show.
 
@@ -243,12 +243,19 @@ The renderer uses text nodes for all supplied text and has no module closures or
 
 The page reads current-shot `targetPressure`, `targetFlow` and `targetTemp` at the selected recorded sample index,
 in bar, ml/s and degrees Celsius, without the graph's temperature scaling. It never reconstructs a target from the
-profile's steps or uses the compared shot's targets. Missing samples and metrics without targets (weight and weight
-flow) show a dash; recorded zero remains zero. A recorded target can be shown even if its actual sample is missing.
+profile's steps or uses the compared shot's targets. With no target sample (including weight and weight flow),
+the row shows only its actual reading: the slash and target are omitted, not replaced by a dash. Recorded zero
+remains zero; a target-only sample is shown as `— / target`. An absent actual value still shows a dash.
 
-The original renderer is released in v0.1.9. The optional target column requires an owner-approved feature merge
-and release after v0.1.9 before consumers can pin it. Do not copy the renderer or patch an installed dependency
-while waiting for that release.
+Actual digits, the slash and target digits occupy three shared table tracks; they are not one concatenated string
+or independently sized per-row grids. Empty slash/target cells retain those tracks, so actual readings, present
+targets, optional other-shot actuals and units remain aligned throughout the table. The header stays
+`Actual / Target` when a selected time has no target samples.
+
+The original renderer is released in v0.1.9 and separate targets in v0.1.10. The compact pair requires an
+owner-approved feature merge and release after v0.1.10. Its API is unchanged; consumers update both the serialized
+renderer and `CHART_READOUT_CSS` from the same released version. Do not copy the renderer or patch an installed
+dependency while waiting for that release.
 
 ### Profile deletion
 
