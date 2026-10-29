@@ -72,13 +72,52 @@ describe("chart touch readout", () => {
     expect(table.children[1].children.every((row) => row.children[2].textContent === "\u2014")).toBe(true);
   });
 
+  it.each([false, true])("inserts current-shot targets beside actual values with comparison=%s", (compare) => {
+    vi.stubGlobal("document", documentStub);
+    const data: ChartReadoutRow[] = [
+      { ...rows[0], target: "0" },
+      { ...rows[1], target: null },
+      { ...rows[2], target: undefined },
+      rows[3],
+      { ...rows[4], target: "94.5" },
+      { ...rows[5], target: "6" },
+    ];
+    const table = createChartReadout(data, compare ? comparison : undefined,
+      { current: "Measured", target: "Goal" }) as unknown as Node;
+    const [head, body] = table.children;
+    expect(head.children[0].children.map((cell) => cell.textContent)).toEqual(
+      compare ? ["", "This shot", "Goal", "Other shot", ""] : ["", "Measured", "Goal", ""]);
+    expect(head.children[0].children.slice(1, -1).every((cell) => cell.scope === "col")).toBe(true);
+    expect(body.children.map((row) => row.children.map((cell) => cell.textContent))).toEqual(compare ? [
+      ["Pressure", "9", "0", "10.25", "bar"], ["Flow", "0.12", "\u2014", "\u2014", "ml/s"],
+      ["Weight flow", "\u2014", "\u2014", "2.5", "g/s"], ["Weight", "123.4", "\u2014", "0", "g"],
+      ["Temperature", "93.1", "94.5", "101", "\u00b0C"], ["Missing", "\u2014", "6", "\u2014", "g"],
+    ] : [
+      ["Pressure", "9", "0", "bar"], ["Flow", "0.12", "\u2014", "ml/s"],
+      ["Weight", "123.4", "\u2014", "g"], ["Temperature", "93.1", "94.5", "\u00b0C"],
+      ["Missing", "\u2014", "6", "g"],
+    ]);
+  });
+
+  it("ignores targets unless the caller opts in, preserving the original layout and omission rules", () => {
+    vi.stubGlobal("document", documentStub);
+    const table = createChartReadout([{ ...rows[0], target: "6" }, { ...rows[5], target: "9" }]) as unknown as Node;
+    expect(table.children).toHaveLength(1);
+    expect(table.children[0].children.map((row) => row.children.map((cell) => cell.textContent)))
+      .toEqual([["Pressure", "9", "bar"]]);
+  });
+
   it("can serialize without module closures and renders supplied text without HTML", () => {
-    const table = runInNewContext(`(${createChartReadout.toString()})(rows, comparison)`, {
-      document: documentStub, rows: [{ ...rows[0], label: "<b>Pressure</b>", value: "<img>" }], comparison,
+    const table = runInNewContext(`(${createChartReadout.toString()})(rows, comparison, target)`, {
+      document: documentStub, rows: [{ ...rows[0], label: "<b>Pressure</b>", value: "<img>", target: "<target>" }],
+      comparison, target: { current: "Actual", target: "<Goal>" },
     }) as Node;
     const row = table.children[1].children[0];
     expect(row.children[0].textContent).toBe("<b>Pressure</b>");
     expect(row.children[1].textContent).toBe("<img>");
     expect(row.children[1].children).toEqual([]);
+    expect(row.children[2].textContent).toBe("<target>");
+    expect(row.children[2].children).toEqual([]);
+    expect(table.children[0].children[0].children[2].textContent).toBe("<Goal>");
   });
 });

@@ -751,9 +751,9 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
     const card = el("div", "readout");
     card.hidden = true;
     box.append(card);
-    const rows: [keyof Series, string, string][] = [
-      ["pressure", t.chartPressure, "bar"], ["flow", t.chartFlow, "ml/s"], ["weightFlow", t.chartWeightFlow, "g/s"],
-      ["weight", t.chartWeight, "g"], ["temp", t.temperatureShort, "°C"],
+    const rows: [keyof Series, string, string, (keyof Series)?][] = [
+      ["pressure", t.chartPressure, "bar", "targetPressure"], ["flow", t.chartFlow, "ml/s", "targetFlow"], ["weightFlow", t.chartWeightFlow, "g/s"],
+      ["weight", t.chartWeight, "g"], ["temp", t.temperatureShort, "°C", "targetTemp"],
     ];
     const colours: Partial<Record<keyof Series, string>> = Object.fromEntries(shown.map((l) => [l.key, l.colour]));
     const nearest = (time: number, ts: number[] = series.t) => {
@@ -779,13 +779,14 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
       if (step) head.append(el("span", "muted", ` · ${step.name || `${t.step} ${step.frame + 1}`}`));
       // Comparing: the other shot at the same second, after this one's value (nothing once it had ended).
       const j = other && time <= other.t[other.t.length - 1] + 0.3 ? nearest(time, other.t) : -1;
-      const rowsBox = makeChartReadout(rows.map(([key, label, unit]) => {
+      const rowsBox = makeChartReadout(rows.map(([key, label, unit, targetKey]) => {
         const v = values(key)[i];
         const w = j >= 0 ? otherValues(key)[j] : null;
+        const target = targetKey ? values(targetKey)[i] : null;
         const digits = key === "temp" || key === "weight" ? 1 : 2;
         return { label, unit, colour: colours[key] ?? "", value: v == null ? null : fmt(v, digits),
-          other: w == null ? null : fmt(w, digits) };
-      }), other ? { current: t.thisShot, other: t.otherShot } : undefined);
+          target: target == null ? null : fmt(target, digits), other: w == null ? null : fmt(w, digits) };
+      }), other ? { current: t.thisShot, other: t.otherShot } : undefined, { current: t.chartActual, target: t.chartTarget });
       card.replaceChildren(head, rowsBox);
       card.hidden = false;
       // The card sits on the side away from the finger.

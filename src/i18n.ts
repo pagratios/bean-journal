@@ -66,6 +66,8 @@ const en = {
   "chartFlow": "Flow",
   "chartWeight": "Weight",
   "chartWeightFlow": "Weight flow",
+  "chartActual": "Actual",
+  "chartTarget": "Target",
   "temperatureShort": "Temperature",
   "step": "Step",
   "stepsKey": "Dotted: step change",
