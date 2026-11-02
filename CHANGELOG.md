@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.12
+
+- A coffee's page shows each of its shots with its curves in miniature (pressure, flow, weight) and its brew time.
+  A tap opens the curves full screen, where **Compare with…** draws another shot of the same coffee dashed under
+  them; **Which shots** narrows the choice to the same coffee & profile. Export the shot thumbnails' data, reader
+  and drawing from the core.
+
 ## 0.1.11
 
 - Present touched chart readings as compact Actual / Target pairs with shared numeric and slash alignment.

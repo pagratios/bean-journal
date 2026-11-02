@@ -12,6 +12,7 @@ import { decaid } from "./core/decaid";
 import { deleteProfile } from "./core/profiles";
 import { createRatioMemory, type RatioChange } from "./core/ratio-memory";
 import { createCoffeeHistory, sortCoffees } from "./core/coffee-order";
+import { readShotThumbs } from "./core/shot-thumbs";
 import { copy, page } from "./ui";
 import { MCP_CONFIRMS, MCP_LEVELS, MCP_TOKEN, mcpMessage, rateLimit, type McpConfirm, type McpLevel } from "./mcp";
 
@@ -1188,6 +1189,8 @@ export function createPlugin(host: Host) {
       case "shot": return shot(b.offset, b.filter, b.shotId);
       case "shots": return { shots: await shotList(b.filter, b.except) };
       case "shot-by-id": return { shot: await shotAt(localId(b.shotId)) };
+      // A coffee page's shots in miniature (curves and brew time), read a few at a time.
+      case "shot-thumbs": return readShotThumbs(b.shotIds, (id) => local(`/shots/${enc(id)}`));
       // The newest shot's id (of a set), for the page to notice a shot saved after it opened.
       case "latest": {
         const query = shotFilter(b.filter);
