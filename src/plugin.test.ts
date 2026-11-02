@@ -986,6 +986,18 @@ describe("Bean Journal plugin", () => {
     expect(t.shots.has("a")).toBe(false);
   });
 
+  it("reads a coffee page's shots in miniature with their brew time, leaving out one it can't read", async () => {
+    const t = setup();
+    t.shots.set("a", makeShot("a", -300));
+    t.shots.set("b", makeShot("b", -200));
+    const { thumbs } = await t.ok({ action: "shot-thumbs", shotIds: ["a", "b", "a", "gone"] });
+    expect(Object.keys(thumbs).sort()).toEqual(["a", "b"]);
+    expect(thumbs.a).toEqual({ t: [0, 15, 30], pressure: [9, 9, 9], flow: [2, 2, 2], weight: [0, 18, 36], duration: 30 });
+    expect((await t.ok({ action: "shot-by-id", shotId: "a" })).shot.series.t).toEqual(thumbs.a.t);
+    expect((await t.control({ action: "shot-thumbs", shotIds: ["../x"] })).status).toBe(400);
+    expect(await t.ok({ action: "shot-thumbs" })).toEqual({ thumbs: {} });
+  });
+
   it("soft-deletes a confirmed profile without changing the loaded workflow or shots", async () => {
     const t = setup();
     const saved = { id: "profile:custom", visibility: "visible", updatedAt: "before", profile };

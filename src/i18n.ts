@@ -184,6 +184,7 @@ const en = {
   "confirmLoadShot": "Load the settings of the shot from {when} for the next shot: its profile, dose, the weight it stopped at, grinder, grind, RPM and water, with this coffee? (It doesn't start a shot.)",
   "loadedShot": "Loaded. Start the shot on the machine.",
   "openShotTitle": "Open this shot on the Shot tab",
+  "shotCurvesOpen": "Open this shot's curves full screen, to compare it with your other shots of this coffee",
   "bags": "Bags",
   "addBag": "Add bag",
   "noBags": "No bag of this coffee yet: Add bag records one.",

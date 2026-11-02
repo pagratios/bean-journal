@@ -6,7 +6,7 @@ import { transformSync } from "esbuild";
 import { texts } from "./i18n";
 import { page } from "./ui";
 import { askChoices, CHOICE_DIALOG_CSS, createPointerGuard, createRatingSlider, RATING_SLIDER_CSS,
-  createChartReadout, CHART_READOUT_CSS } from "./core";
+  createChartReadout, CHART_READOUT_CSS, createShotThumb, SHOT_THUMB_CSS } from "./core";
 
 const source = readFileSync(resolve("src", "ui.ts"), "utf8");
 const theme = readFileSync(resolve("src", "core", "theme.css"), "utf8");
@@ -67,7 +67,7 @@ describe("the page", () => {
     for (const action of ["status", "coffees", "coffee", "save-coffee", "add-bag", "set-photo", "select", "choose-coffee", "shot", "shots",
       "shot-by-id", "latest", "rate-shot", "assign-coffee", "delete-shot", "load-shot", "next-settings", "grinders", "waters",
       "save-grinder", "archive-grinder", "save-water", "remove-water",
-      "update-preferences", "shot-text", "mcp", "old-bags", "finish-old-bags"]) {
+      "update-preferences", "shot-text", "mcp", "old-bags", "finish-old-bags", "shot-thumbs"]) {
       expect(source).toContain(`api("${action}"`);
     }
     expect(source).toContain('api("delete-shot", { shotId: s.id, confirmed: true })');
@@ -135,6 +135,16 @@ describe("the page", () => {
     expect(html).toContain(".chart-readout .chart-readout-target");
     expect(source).not.toContain("readout-cols");
     expect(source).not.toContain('el("div", "readout-row")');
+  });
+
+  it("shows a coffee's shots in miniature, with their brew time, and compares them full screen", () => {
+    const html = render();
+    expect(html).toContain(createShotThumb.toString());
+    expect(html).toContain(SHOT_THUMB_CSS);
+    expect(source).toContain('api("shot-thumbs", { shotIds: missing })');
+    expect(source).toContain("openFullChart(shotFrom(await api(\"shot-by-id\", { shotId: id })), shots)");
+    expect(source).toContain('which.append(option(t.setCoffee, "coffee"), option(t.setBoth, "both"))');
+    expect(source).toContain('duration !== null ? `${fmt(duration, 0)} s` : ""');
   });
 });
 

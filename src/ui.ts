@@ -4,6 +4,7 @@ import { BALANCES, BODIES, type Balance, type BodyLevel } from "./core/shots";
 import { createRatingSlider, RATING_SLIDER_CSS } from "./core/rating-controls";
 import { askChoices, CHOICE_DIALOG_CSS, type DialogChoice } from "./core/choice-dialog";
 import { createChartReadout, CHART_READOUT_CSS } from "./core/chart-readout";
+import { createShotThumb, SHOT_THUMB_CSS, type ShotThumb } from "./core/shot-thumbs";
 
 export type { Copy };
 declare const __DECAID_COPY__: Copy;
@@ -14,7 +15,8 @@ export function copy(): Copy {
 
 // Serialized into the page: browser helpers must remain inside this function.
 function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRatingSlider: typeof createRatingSlider,
-  showChoices: typeof askChoices, makeChartReadout: typeof createChartReadout, balances: typeof BALANCES, bodies: typeof BODIES) {
+  showChoices: typeof askChoices, makeChartReadout: typeof createChartReadout, balances: typeof BALANCES, bodies: typeof BODIES,
+  makeShotThumb: typeof createShotThumb) {
   type Data = Record<string, unknown>;
   type Coffee = {
     id: string; beanId: string; batchId: string | null; roaster: string; name: string;
@@ -122,6 +124,8 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
   // The compare list for the shot on screen: saving a rating draws the shot again without reading the others again.
   let compareFor: { key: string; value: Promise<Data> } | null = null;
   let chartDrawn: { series: Series; compare: Series | null; node: HTMLElement } | null = null;
+  // Coffee pages' shots in miniature, kept while the page is open: a shot's curves don't change.
+  const thumbs = new Map<string, ShotThumb>();
   const compareListOf = (s: Shot) => {
     const key = `${s.id}|${JSON.stringify(setFilter)}`;
     if (!compareFor || compareFor.key !== key) {
@@ -1180,7 +1184,9 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
     updateFooter();
   }
   // ── The chart on the whole screen: double tap, × or Esc to close. ──
-  function openFullChart(s: Shot) {
+  // `others`: a coffee's shots (from its page) to compare with there, all of them or those of the open shot's profile;
+  // without them it shows the Shot page's comparison.
+  function openFullChart(s: Shot, others?: Data[]) {
     closeFullChart();
     const box = el("div", "full-chart");
     box.id = "full-chart";
@@ -1192,16 +1198,66 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
     const close = el("button", "secondary chart-close", "×") as HTMLButtonElement;
     close.type = "button"; close.title = t.close; close.setAttribute("aria-label", t.close);
     close.onclick = closeFullChart;
-    head.append(title, close);
+    head.append(title);
     const legend = el("div", "legend");
     for (const [cls, label] of [["p", t.pressure], ["f", t.flow], ["wf", t.weightFlow], ["w", t.weight], ["c", t.temperature], ["dash", t.targets], ["dots", t.stepsKey]]) legend.append(el("span", `key ${cls}`, label));
     const area = el("div", "full-area");
+    let width = 600;
+    const draw = (compare: Series | null) => { area.replaceChildren(chart(s.series, s.steps ?? [], { width, onDoubleTap: closeFullChart, compare })); };
+    const option = (label: string, value: string) => {
+      const o = el("option", "", label) as HTMLOptionElement;
+      o.value = value;
+      return o;
+    };
+    const selects: HTMLSelectElement[] = [];
+    if (others) {
+      // The coffee is always the same here: the choice is only whether the profile is too.
+      const coffeeShots = others.filter((o) => str(o.id) && str(o.id) !== s.id);
+      const which = el("select", "dd-shot-set") as HTMLSelectElement;
+      which.setAttribute("aria-label", t.shotSet);
+      which.append(option(t.setCoffee, "coffee"), option(t.setBoth, "both"));
+      const pick = el("select", "compare-select") as HTMLSelectElement;
+      pick.setAttribute("aria-label", t.compareWith);
+      const compareKey = el("span", "key cmp");
+      compareKey.hidden = true;
+      legend.append(compareKey);
+      let comparedId = "";
+      const show = (other: Shot | null) => {
+        comparedId = other?.id ?? "";
+        compareKey.hidden = !other;
+        compareKey.textContent = other ? `${t.comparedWith} ${date(other.timestamp, true)}` : "";
+        draw(other?.series ?? null);
+      };
+      const fill = () => {
+        const shown = coffeeShots.filter((o) => which.value !== "both" || same(str(o.profile), s.profile));
+        pick.replaceChildren(option(t.compareWith, ""), ...shown.map((o) => option(
+          [date(o.timestamp, true), str(o.profile), num(o.score) !== null ? `★ ${num(o.score)}` : ""].filter(Boolean).join(" · "), str(o.id))));
+        pick.disabled = !shown.length;
+        // The shot compared with is no longer among the choices.
+        if (comparedId && !shown.some((o) => str(o.id) === comparedId)) show(null);
+        pick.value = comparedId;
+      };
+      which.onchange = fill;
+      pick.onchange = () => { void run(async () => {
+        const wanted = pick.value;
+        const other = wanted ? shotFrom(await api("shot-by-id", { shotId: wanted })) : null;
+        // Closed, or another choice made, while it was read.
+        if (!box.isConnected || pick.value !== wanted) return;
+        show(other);
+      }); };
+      fill();
+      head.append(which, pick);
+      selects.push(which, pick);
+    }
+    head.append(close);
     box.append(head, area, legend);
     document.body.append(box);
+    // The page's own dropdowns now, so the head has its final height before the chart is sized.
+    selects.forEach(enhanceSelect);
     // As wide as the screen allows for the drawing's 400 of height.
     const rect = area.getBoundingClientRect();
-    const width = Math.max(600, Math.min(1400, 400 * rect.width / Math.max(200, rect.height)));
-    area.append(chart(s.series, s.steps ?? [], { width, onDoubleTap: closeFullChart, compare: shot?.id === s.id ? compared?.series ?? null : null }));
+    width = Math.max(600, Math.min(1400, 400 * rect.width / Math.max(200, rect.height)));
+    draw(others ? null : shot?.id === s.id ? compared?.series ?? null : null);
     document.addEventListener("keydown", escClose);
   }
   function escClose(e: KeyboardEvent) { if (e.key === "Escape") closeFullChart(); }
@@ -1743,9 +1799,34 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
     const scored = shots.filter((x) => num(x.score) !== null);
     const lastId = str(value.last) || str(shots[0]?.id);
     const bestId = str(value.best) || str(scored.reduce<Data | null>((a, b) => !a || num(b.score)! > num(a.score)! ? b : a, null)?.id);
+    // Each shot's curves in miniature and, once read, its brew time; a tap opens the curves full screen, to compare
+    // with the coffee's other shots.
+    const shotRows = new Map<string, { x: Data; face: HTMLButtonElement; details: HTMLElement }>();
+    const detailsOf = (x: Data, duration: number | null) => {
+      const stop = num(x.targetYield) ?? num(x.yield);
+      return [
+        str(x.profile), num(x.dose) !== null ? `${fmt(num(x.dose))} g` : "", stop !== null ? `→ ${fmt(stop)} g` : "",
+        duration !== null ? `${fmt(duration, 0)} s` : "",
+        str(x.grind) ? `${t.grind} ${str(x.grind)}${str(x.grinder) ? ` (${str(x.grinder)})` : ""}` : "",
+      ].filter(Boolean).join(" · ");
+    };
+    const showThumb = (id: string, failed = false) => {
+      const row = shotRows.get(id), c = thumbs.get(id) ?? null;
+      if (!row) return;
+      const drawing = makeShotThumb(c);
+      // Unread: a still frame, and the tap still opens the shot.
+      if (failed) drawing.classList.remove("loading");
+      row.face.replaceChildren(drawing);
+      if (!c) return;
+      if (c.t.length < 2) { row.face.disabled = true; row.face.title = t.noCurves; row.face.setAttribute("aria-label", t.noCurves); }
+      row.details.textContent = detailsOf(row.x, num(c.duration));
+    };
     for (const x of shots) {
       const id = str(x.id);
       const row = el("div", "recipe");
+      const face = el("button", "secondary shot-thumb") as HTMLButtonElement;
+      face.type = "button"; face.title = t.shotCurvesOpen; face.setAttribute("aria-label", `${t.shotCurvesOpen}: ${date(x.timestamp, true)}`);
+      face.onclick = () => { void run(async () => { openFullChart(shotFrom(await api("shot-by-id", { shotId: id })), shots); }); };
       const text = el("div", "grow tappable");
       text.title = t.openShotTitle;
       text.onclick = () => openShot(id);
@@ -1758,11 +1839,9 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
         sc.style.setProperty("--h", String(scoreHue(num(x.score)!)));
         head.append(sc);
       }
-      const stop = num(x.targetYield) ?? num(x.yield);
-      text.append(head, el("div", "muted", [
-        str(x.profile), num(x.dose) !== null ? `${fmt(num(x.dose))} g` : "", stop !== null ? `→ ${fmt(stop)} g` : "",
-        str(x.grind) ? `${t.grind} ${str(x.grind)}${str(x.grinder) ? ` (${str(x.grinder)})` : ""}` : "",
-      ].filter(Boolean).join(" · ")));
+      const details = el("div", "muted", detailsOf(x, null));
+      text.append(head, details);
+      shotRows.set(id, { x, face, details });
       const tools = el("div", "actions");
       tools.append(button(t.loadSettings, async () => {
         if (!(await confirmIt(t.confirmLoadShot.replace("{when}", date(x.timestamp, true)), t.loadSettings))) return;
@@ -1770,8 +1849,20 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
         await refreshStatus();
         say(t.loadedShot);
       }, id === lastId || id === bestId ? "" : "secondary"));
-      row.append(text, tools);
+      row.append(face, text, tools);
       pulled.append(row);
+    }
+    for (const id of shotRows.keys()) showThumb(id);
+    const missing = [...shotRows.keys()].filter((id) => !thumbs.has(id));
+    if (missing.length) {
+      void api("shot-thumbs", { shotIds: missing }).then((answer) => {
+        const got = (answer.thumbs ?? {}) as Record<string, ShotThumb>;
+        for (const id of missing) {
+          const c = got[id];
+          if (c && Array.isArray(c.t)) thumbs.set(id, c);
+          showThumb(id, !thumbs.has(id));
+        }
+      }).catch(() => { for (const id of missing) showThumb(id, true); });
     }
     const cols = el("div", "detail-cols");
     cols.append(bagsBox, pulled);
@@ -2762,6 +2853,9 @@ html.gear-only,html.gear-only body{background:transparent!important;color-scheme
 @media (max-width:60rem){header{flex-wrap:wrap}#next-coffee{flex-basis:100%;order:3;margin-left:0}#view-shot{grid-template-columns:1fr;grid-template-rows:auto auto minmax(0,1fr)}.shot-bar,#shot-body>.chart-wrap,.shot-side{grid-column:1;grid-row:auto}.numbers{grid-template-columns:repeat(3,1fr)}.form-cols{grid-template-columns:1fr}}
 ${RATING_SLIDER_CSS}
 ${CHART_READOUT_CSS}
+${SHOT_THUMB_CSS}
+.coffee-shots .recipe>.grow{min-width:0}.full-head button.compare-select{margin-top:0;flex:none}
+@media (prefers-reduced-motion:reduce){.shot-thumb-chart.loading{animation:none}}
 ${CHOICE_DIALOG_CSS}
 </style></head><body>
 <button type="button" id="leave" aria-label="${esc(t.close)}" hidden>×</button>
@@ -2830,5 +2924,5 @@ ${CHOICE_DIALOG_CSS}
 <dialog id="picker"><div class="dialog-head"><h2>${esc(t.chooseCoffee)}</h2><label class="switch finished"><input type="checkbox" class="sw" id="picker-finished"> ${esc(t.showFinished)}</label><button type="button" id="picker-add" class="secondary">+ ${esc(t.addCoffee)}</button><button type="button" id="picker-close" class="secondary">${esc(t.close)}</button></div><div class="toolbar"><div id="picker-filters" class="filters"></div><input id="picker-search" type="search" placeholder="${esc(t.searchPlaceholder)}" aria-label="${esc(t.searchPlaceholder)}"><button type="button" id="picker-clear" class="secondary clear-filters" hidden>${esc(t.clearFilters)}</button><span id="picker-hint" class="muted">${esc(t.pickerHint)}</span></div><div id="picker-history" class="coffee-history" role="status" aria-live="polite" hidden></div><div id="picker-list"></div></dialog>
 </main>
 <footer id="actions" hidden><span id="unsaved-note" class="pill unsaved" role="status" hidden>${esc(t.unsaved)}</span><button type="button" id="act-cancel" class="secondary">${esc(t.cancel)}</button><button type="button" id="act-back" class="secondary" hidden>← ${esc(t.back)}</button><button type="button" id="act-done">${esc(t.done)}</button></footer>
-<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()}, ${createRatingSlider.toString()}, ${askChoices.toString()}, ${createChartReadout.toString()}, ${JSON.stringify(BALANCES)}, ${JSON.stringify(BODIES)});</script></body></html>`;
+<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()}, ${createRatingSlider.toString()}, ${askChoices.toString()}, ${createChartReadout.toString()}, ${JSON.stringify(BALANCES)}, ${JSON.stringify(BODIES)}, ${createShotThumb.toString()});</script></body></html>`;
 }

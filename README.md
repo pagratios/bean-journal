@@ -41,7 +41,9 @@ a long-press menu item, a screensaver button and overlay pages, from small to fu
   shot and no roast, purchase, opening or freezer date in the last 3 months, not frozen; an import's, say), the list
   offers once to finish them: you untick any to keep (bags with grams left start unticked), or Keep all.
 - **A coffee's page**: every detail, its bags, its shots (last and best marked, load a shot's settings), Use for next
-  shot, Edit, Freeze / Thaw, Finished.
+  shot, Edit, Freeze / Thaw, Finished. Each shot shows its curves in miniature and its brew time; a tap opens the
+  curves full screen, where **Compare with…** draws another shot of the coffee dashed under them (**Which shots**:
+  same coffee, or same coffee & profile).
 - **Add / edit a coffee**: roaster, name, country, region, producer, farm, varieties, altitude, process, decaf, tasting
   notes, the roaster's page; and for the bag: roast date and level, weight and grams left, frozen with its dates,
   opened, best before, notes. A photo taken with the tablet's camera or chosen from its gallery.
@@ -256,6 +258,30 @@ The original renderer is released in v0.1.9 and separate targets in v0.1.10. The
 owner-approved feature merge and release after v0.1.10. Its API is unchanged; consumers update both the serialized
 renderer and `CHART_READOUT_CSS` from the same released version. Do not copy the renderer or patch an installed
 dependency while waiting for that release.
+
+### Shot thumbnails
+
+A list of shots can show each one's curves in miniature and its brew time. Exports:
+
+- `type ShotThumb = { t: number[]; pressure: (number | null)[]; flow: (number | null)[]; weight: (number | null)[];
+  duration: number | null }`: seconds from the start of the pour, bar, ml/s, grams; `duration` is how long it poured
+  in seconds (`shotCurves`' own), `null` when unknown.
+- `shotThumb(shot: ObjectData, points = 48): ShotThumb`: one stored Decaid shot, reduced.
+- `readShotThumbs(ids: unknown, read: (id: string) => Promise<unknown>, options?: { max?: number; parallel?: number;
+  points?: number }): Promise<{ thumbs: Record<string, ShotThumb> }>`: the plugin side of a `shot-thumbs` action.
+  `ids` is checked with `localId` (a bad one throws `invalidId`; a non-array is no ids), duplicates count once, at most
+  `max` (`SHOT_THUMBS_MAX`, 30) are read, `parallel` (4) at a time. `read` returns the stored shot (Decaid's
+  `GET /shots/{id}`); a shot it can't read (or that isn't an object) is left out.
+- `createShotThumb(curves: ShotThumb | null): SVGSVGElement`: the browser drawing, 120×48 on the big chart's scales
+  (pressure and flow on 0–10, higher when the peak is; weight at a tenth), in `--c-pressure`, `--c-flow` and
+  `--c-weight`. `null` draws an empty frame that pulses (`loading`) while the curves are read; fewer than two points,
+  a dash (`empty`). Self-contained: pass its `toString()` into the serialized page client, like `createChartReadout`.
+- `SHOT_THUMB_CSS`: append after the page's base styles. Put the drawing in a `button.shot-thumb` (6.4×2.667rem); the
+  frame is the drawing's own and the button is cleared to transparent, so give it the page's quiet button class if
+  plain buttons are coloured. Pages that honour reduced motion turn off `.shot-thumb-chart.loading`'s animation.
+
+Bean Journal's coffee page asks for its shots' thumbnails in one call after it draws the list, keeps them while the
+page is open, and adds `duration` to each row's details once they arrive.
 
 ### Profile deletion
 
