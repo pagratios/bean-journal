@@ -2,6 +2,7 @@
 // coffees, grinders and shots, and serves a stock Streamline checkout (port 3000) to try the plugin's surfaces.
 // Run: npm run build, then node tools/preview-server.mjs, with SKIN=<a decentespresso/streamline-js checkout> for the
 // skin (PowerShell: $env:SKIN = "C:\path\to\streamline-js"). R2=0 leaves the refractometer out, R2=fail makes it fail,
+// R2=community tries the asynchronous driver; R2=community-fail reports a device error.
 // SCALE=0 leaves the scale out. Everything lives in memory: a restart starts from the samples again.
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
@@ -567,18 +568,42 @@ on("PUT", "/machine/state/([A-Za-z]+)", (q, body, [wanted]) => {
 });
 
 // A DiFluid R2 as Decaid's Sensors API shows it.
-let r2Reads = 0;
-const R2 = { id: "AA:BB:CC:DD:EE:01", info: { name: "DiFluid R2", vendor: "DiFluid",
-  data: [{ key: "tds", type: "number", unit: "percent" }, { key: "temperatureC", type: "number", unit: "Celsius" }],
-  commands: [{ id: "measure", name: "Measure TDS" }] } };
+const R2 = { id: "plugin:difluid-r2.reaplugin:difluid-r2:AA:BB:CC:DD:EE:01",
+  info: { name: "DiFluid R2", vendor: "DiFluid",
+    data: [{ key: "reading", type: "object" }, { key: "temperatures", type: "object" }, { key: "status", type: "string" },
+      { key: "measuring", type: "boolean" }, { key: "error", type: "string" }],
+    commands: [{ id: "measure" }, { id: "measureAverage" }, { id: "getReading" }],
+  } };
 const withR2 = process.env.R2 !== "0";
+const r2Sockets = new Set(), r2Listeners = new Map();
+let r2Snapshot = { status: "idle", reading: {}, measuring: false, error: "" };
+function publishR2() {
+  for (const socket of r2Sockets) wsText(socket, r2Snapshot);
+  for (const listener of r2Listeners.values()) listener({ type: "data", data: JSON.stringify(r2Snapshot) });
+}
+const sensorFailure = (message) => Object.assign(fail(500, message), { responseBody: { status: "error", message } });
 on("GET", "/sensors", () => withR2 ? [R2] : []);
 on("GET", "/sensors/([^/]+)", (q, body, [id]) => withR2 && id === R2.id ? R2 : Promise.reject(notFound("Sensor")));
 on("POST", "/sensors/([^/]+)/execute", async (q, body, [id]) => {
   if (!withR2 || id !== R2.id) throw notFound("Sensor");
-  await new Promise((r) => setTimeout(r, 1500));
-  if (body?.commandId !== "measure" || process.env.R2 === "fail") throw fail(500, "Exception: R2 measurement failed");
-  return { status: "ok", result: { reading: { timestamp: iso(Date.now()), tds: [9.32, 9.41, 9.37, 9.35, 9.39][(r2Reads++) % 5], temperatureC: 24.6 } } };
+  if (body?.commandId === "getReading") {
+    if (!Object.keys(r2Snapshot.reading).length) throw sensorFailure("Error: DiFluid R2 has no completed reading");
+    return { status: "ok", result: { reading: r2Snapshot.reading } };
+  }
+  if (!["measure", "measureAverage"].includes(body?.commandId)) throw sensorFailure("Error: Unsupported DiFluid R2 command");
+  if (r2Snapshot.measuring) throw sensorFailure("Error: DiFluid R2 is busy");
+  const count = body.commandId === "measureAverage" ? body.params?.count : 1;
+  if (!Number.isInteger(count) || count < (body.commandId === "measureAverage" ? 2 : 1) || count > 10) {
+    throw sensorFailure("Error: Invalid count");
+  }
+  r2Snapshot = { status: count === 1 ? "started" : "average_started", reading: {}, measuring: true, error: "" };
+  publishR2();
+  setTimeout(() => {
+    r2Snapshot = ["fail", "community-fail"].includes(process.env.R2) ? { status: "error", reading: {}, measuring: false, error: "no_liquid" }
+      : { status: "finished", reading: { tds: 9.37, temperatureC: 24.6 }, measuring: false, error: "" };
+    publishR2();
+  }, 1500 + count * 200);
+  return { status: "ok", result: { started: true } };
 });
 // The machine and the scale too: Streamline asks Decaid's devices whether a silent machine feed means a dead machine.
 const devices = () => [
@@ -608,7 +633,7 @@ async function route(method, path, query, raw, ifNoneMatch) {
       }
       return answer;
     } catch (e) {
-      return { status: e.status ?? 500, data: { error: e.message } };
+      return { status: e.status ?? 500, data: e.responseBody ?? { error: e.message } };
     }
   }
   return null;
@@ -655,6 +680,16 @@ function startPlugin() {
     runInContext(readFileSync(PLUGIN_JS, "utf8"), context, { filename: PLUGIN_JS });
     plugin = context.createPlugin({
       log: (message) => console.log(`[plugin] ${message}`),
+      transport: {
+        open: async ({ kind, url }) => {
+          if (kind !== "websocket" || url !== `ws://localhost:8080/ws/v1/sensors/${encodeURIComponent(R2.id)}/snapshot`) {
+            throw new Error("Preview transport supports only the R2 snapshot");
+          }
+          return { handle: randomUUID() };
+        },
+        onEvent: (handle, listener) => { r2Listeners.set(handle, listener); },
+        close: async (handle) => { r2Listeners.delete(handle); },
+      },
       // What the plugin emits goes to the sockets open on its websocket endpoint of that name.
       emit: (event, payload) => { for (const socket of pluginSockets.get(event) ?? []) wsText(socket, payload); },
       storage: (cmd) => {
@@ -772,6 +807,13 @@ decaid.on("upgrade", (req, socket) => {
       wsText(socket, { timestamp: iso(Date.now()), weight: +weight.toFixed(1), weightFlow: 0, battery: 80 });
     }, 200);
     if (acceptSocket(req, socket, () => { clearInterval(timer); scaleSockets.delete(socket); })) scaleSockets.add(socket);
+    return;
+  }
+  if (path === `/ws/v1/sensors/${encodeURIComponent(R2.id)}/snapshot` && withR2) {
+    if (acceptSocket(req, socket, () => r2Sockets.delete(socket))) {
+      r2Sockets.add(socket);
+      wsText(socket, r2Snapshot);
+    }
     return;
   }
   socket.destroy();

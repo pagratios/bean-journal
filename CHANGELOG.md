@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.13
+
+- Require the community DiFluid R2 v0.2.0 driver for Single and the device's Average of 2–10 tests, without a
+  native-driver fallback. Show install/load/connect instructions when missing, and explain that Average changes
+  the R2's stored number-of-tests setting.
+- Wait for completed TDS, not the start acknowledgement or intermediate samples. Report device errors,
+  disconnects and timeouts; cancel waiting without saving a result (the device may remain busy).
+- Export shared discovery, measurement and Decaid sensor-transport helpers from the core. Community-driver MCP
+  measurements return an operation id to poll or cancel, avoiding Decaid's short HTTP request deadline.
+
 ## 0.1.12
 
 - A coffee's page shows each of its shots with its curves in miniature (pressure, flow, weight) and its brew time.

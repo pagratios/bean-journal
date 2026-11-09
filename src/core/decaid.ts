@@ -23,7 +23,10 @@ export async function decaid(path: string, method = "GET", body?: unknown): Prom
   const raw = await response.text();
   if (!response.ok) {
     let detail = "";
-    try { detail = text(optionalObject(JSON.parse(raw)).error).slice(0, 300); } catch { /* no JSON */ }
+    try {
+      const value = optionalObject(JSON.parse(raw));
+      detail = text(value.message ?? value.error).slice(0, 300);
+    } catch { /* no JSON */ }
     const code = response.status === 404 ? "notFound" : response.status === 429 ? "rateLimit" : "requestFailed";
     throw Object.assign(new Error(code), { status: response.status, detail }) as DecaidError;
   }

@@ -56,6 +56,23 @@ a long-press menu item, a screensaver button and overlay pages, from small to fu
 
 Streamline with DYE2 on clears the coffee, grinder and RPM after each shot; Bean Journal puts the next shot's back.
 
+### DiFluid R2
+
+The compact R2 button beside TDS requires the separately installed
+[community driver v0.2.0](https://github.com/Sabotage1/decaid-difluid-r2/releases/tag/v0.2.0) or newer for
+**Single** and **Average ×2–×10**, using the R2's own aggregate result. There is no native-driver fallback.
+**Average changes the R2's stored number-of-tests setting.** Only one driver should own the R2 connection; follow
+the driver's installation guide to connect through it rather than native Decaid. Bean Journal neither installs the
+driver nor changes Bluetooth ownership. When the driver/sensor is missing, the page tells you to install/load the
+plugin, turn on the R2 and connect it through that driver in Decaid.
+
+The start acknowledgement is not a reading. Bean Journal waits for the completed result, reports device errors
+and disconnections, and fills TDS (EY follows) only on success; the page still saves on Done, like a manual edit.
+Tap the pulsing R2 button again to cancel waiting. Cancellation does not stop the physical test: the driver has
+no stop command, so the R2 may remain busy. Leaving the shot/page also cancels waiting.
+The integration's safety deadline covers the driver's maximum configured timeout (180 seconds per sample, plus
+10 seconds of transport grace); the driver's usual deadline is 45 seconds per sample. No cloud upload is started.
+
 **Ratio choices follow the coffee and profile.** For example, one coffee can keep Ratio off and an 80 g drink
 regardless of dose, while another keeps Ratio on at 1:2.5 (18 g → 45 g; 20 g → 50 g). Switching coffee or profile
 restores that combination's mode and target, including after a restart. Bags of the same bean share its choices.
@@ -122,14 +139,23 @@ the same checks apply.
 
 | Level | Tools (each level includes the one before) |
 | --- | --- |
-| Read only | `get_status`, `get_dial_in_context`, `list_coffees`, `get_shot`, `list_shots`, `list_profiles`, `list_equipment`, `get_preferences`, `get_refractometer` |
-| Shots and coffee | `rate_shot`, `delete_shot`, `measure_tds`, `set_next_shot`, `add_coffee`, `update_coffee` |
+| Read only | `get_status`, `get_dial_in_context`, `list_coffees`, `get_shot`, `list_shots`, `list_profiles`, `list_equipment`, `get_preferences`, `get_refractometer`, `get_tds_measurement` |
+| Shots and coffee | `rate_shot`, `delete_shot`, `measure_tds`, `cancel_tds_measurement`, `set_next_shot`, `add_coffee`, `update_coffee` |
 | Everything | `create_profile`, `update_profile`, `delete_profile`, `update_preferences`, `search_refractometer`, `choose_coffee`, `load_profile`, `load_shot_settings` |
 
 For `delete_profile`, first read `list_profiles(profile_id)` and pass that record's `updatedAt` as
 `expected_updated_at`, together with `profile_id`. Ask the user before retrying with `confirmed: true`.
 Changed, missing, already deleted and built-in profiles are refused. The machine must be idle. Decaid soft-deletes
 only the library entry; historical shots and the loaded workflow are left unchanged.
+
+`measure_tds(count)` defaults to Single (`1`); `2–10` requires a sensor advertised with `average: true`.
+All measurements require the community driver and return `{measurementId, status: "measuring"}` promptly
+because Decaid ends plugin HTTP requests after 30 seconds. Poll `get_tds_measurement(measurement_id)` for
+`status: "completed"` and TDS. With `shot_id`, only that final result is saved on the named shot; without it no
+shot changes. Failures are errors, not pending responses. `cancel_tds_measurement` cancels waiting and prevents
+a pending result being saved, without stopping the physical test. Operations are in-memory, lost on plugin unload,
+and a new community measurement retires the previous completed/failed operation; read its result before starting
+another.
 
 `add_coffee` and `update_coffee` take every field Decaid has for a coffee and its bag, and `photo`: an https image
 address (kept as it is and shown from the web; Decaid's plugins can't download an image) or a
@@ -178,7 +204,8 @@ and open http://localhost:3000/ (Streamline) or
 http://localhost:8080/api/v1/plugins/bean-journal.reaplugin/ui (the page alone; `?view=coffees`, `?theme=dark`…).
 A fake Decaid on port 8080 runs the built plugin with sample coffees, grinders and shots. The **☕ Simulate coffee**
 button pulls a 32 s shot (stored as Decaid stores shots), Sleep shows the screensaver, and a fake DiFluid R2 measures.
-`R2=0` removes the R2, `SCALE=0` the scale. Restart it after a build.
+`R2=0` removes the R2, `R2=community` simulates the asynchronous driver with Single/Average, and
+`R2=community-fail` reports a device error. `SCALE=0` removes the scale. Restart it after a build.
 
 ## CI and releases
 
@@ -237,6 +264,29 @@ Pass `{ current: "Actual", target: "Target" }` as the third argument to show the
 `Actual / Target` pair before any comparison column. These headings take precedence over a comparison's `current`.
 Omit that argument for the original layout; existing one- and two-argument callers are unchanged.
 The host supplies localized labels and number formatting, and decides which samples to show.
+
+### Refractometers
+
+`createRefractometerRuntime({ request, subscribe, timeoutPerSampleMs? })` shares discovery and the required
+community driver's Single/Average measurement contract. Native and unrelated sensors are refused.
+`request` takes a Decaid API-relative path, optional method and body,
+and returns parsed JSON; on HTTP errors it must throw an Error carrying the server's `message`/`error` in
+`detail`. `decaid` implements this contract, including the documented `no completed reading` HTTP error.
+`subscribe(path, snapshot, failed)` opens the sensor WebSocket **before** the command, resolves a disposal
+function when ready, and reports stream errors/close. Browser hosts can serialize the factory's `toString()`;
+it needs no `URL` class or imported runtime values.
+
+`runtime.discover(sensors)` returns `{id, name, average: true}[]` only for the community driver's sensor prefix,
+object reading channel and all three commands. `runtime.measure(sensor, count = 1)` returns `{result: Promise<number>,
+cancel()}`; only `result` is TDS. Errors use `sensorFailed` plus `detail`, invalid counts use `invalidArguments`.
+Unsupported sensors use `sensorNotFound`, which the host should render as install/load/connect instructions.
+Default `timeoutPerSampleMs` is the driver's supported maximum, 180000; hosts that know its actual setting may
+pass 15000–180000. The deadline is per count plus 10 seconds of transport grace.
+
+Plugins use `sensorSubscription(host.transport, reportError)` with Decaid's `network.websocket` permission;
+it uses a localhost-only connection, not a browser WebSocket global. A plugin should keep community operations
+outside short HTTP requests, expose polling/cancellation, and check cancellation again before writing a shot.
+No driver code is bundled: this is a client of its published sensor API.
 
 One table shares column widths across every row and the header. Numbers are right-aligned with tabular digits;
 units occupy one separate trailing column and apply to both shots. Missing values show a dash without shifting

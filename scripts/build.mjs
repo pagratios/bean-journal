@@ -38,7 +38,7 @@ const manifest = {
   id, version, author: "pagratios", name: "Bean Journal",
   description: copy.intro, apiVersion: 1,
   // events.workflow: Keep ratio and the next shot's gear follow the skin's changes; events.shots: a new shot.
-  permissions: ["log", "api", "emit", "pluginStorage", "events.shots", "events.workflow"],
+  permissions: ["log", "api", "emit", "pluginStorage", "events.shots", "events.workflow", "network.websocket"],
   settings: Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, {
     ...value, label: copy.settings[key][0], description: copy.settings[key][1],
   }])),
