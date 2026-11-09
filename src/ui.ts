@@ -5,7 +5,7 @@ import { createRatingSlider, RATING_SLIDER_CSS } from "./core/rating-controls";
 import { askChoices, CHOICE_DIALOG_CSS, type DialogChoice } from "./core/choice-dialog";
 import { createChartReadout, CHART_READOUT_CSS } from "./core/chart-readout";
 import { createShotThumb, SHOT_THUMB_CSS, type ShotThumb } from "./core/shot-thumbs";
-import { createRefractometerRuntime, type Refractometer } from "./core/refractometer";
+import { createRefractometerRuntime, parseRefractometerPreference, type Refractometer } from "./core/refractometer";
 
 export type { Copy };
 declare const __DECAID_COPY__: Copy;
@@ -17,7 +17,8 @@ export function copy(): Copy {
 // Serialized into the page: browser helpers must remain inside this function.
 function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRatingSlider: typeof createRatingSlider,
   showChoices: typeof askChoices, makeChartReadout: typeof createChartReadout, balances: typeof BALANCES, bodies: typeof BODIES,
-  makeShotThumb: typeof createShotThumb, makeRefractometer: typeof createRefractometerRuntime) {
+  makeShotThumb: typeof createShotThumb, makeRefractometer: typeof createRefractometerRuntime,
+  parseR2Preference: typeof parseRefractometerPreference) {
   type Data = Record<string, unknown>;
   type Coffee = {
     id: string; beanId: string; batchId: string | null; roaster: string; name: string;
@@ -466,6 +467,31 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
   let r2Measuring = false;
   let r2Sensor: Refractometer | undefined;
   let cancelR2: (() => void) | undefined;
+  const r2PreferenceKey = "bean-journal.r2";
+  function readR2Preference() {
+    const stored = localStorage.getItem(r2PreferenceKey);
+    return parseR2Preference(stored === null ? null : JSON.parse(stored));
+  }
+  function loadR2Preference() {
+    const select = $("r2-mode") as HTMLSelectElement;
+    const count = $("r2-count") as HTMLSelectElement;
+    try {
+      const preference = readR2Preference();
+      select.value = preference.mode;
+      count.value = String(preference.count);
+    } catch { select.value = ""; count.value = "3"; say(t.r2PreferenceFailed, "error"); }
+    $("r2-count-control").hidden = select.value !== "average";
+  }
+  function saveR2Preference() {
+    const select = $("r2-mode") as HTMLSelectElement;
+    try {
+      const preference = parseR2Preference({ mode: select.value,
+        count: Number(($("r2-count") as HTMLSelectElement).value) });
+      localStorage.setItem(r2PreferenceKey, JSON.stringify(preference));
+      $("r2-count-control").hidden = preference.mode !== "average";
+      say(t.saved);
+    } catch { loadR2Preference(); say(t.r2PreferenceFailed, "error"); }
+  }
   const r2Runtime = makeRefractometer({
     request: async (path, method = "GET", body) => {
       const response = await fetch(`/api/v1${path}`, {
@@ -567,13 +593,9 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
   async function measureR2(): Promise<number> {
     const sensor = r2Sensor;
     if (!sensor) throw new Error(t.r2None);
-    const mode = await ask(t.r2AverageHelp, [
-      { label: t.cancel, value: "cancel", kind: "secondary" },
-      { label: t.r2Single, value: "1" },
-      ...Array.from({ length: 9 }, (_, i) => ({ label: t.r2Average.replace("{count}", String(i + 2)), value: String(i + 2) })),
-    ], "cancel");
-    if (mode === "cancel") throw new Error(t.cancel);
-    const operation = r2Runtime.measure(sensor, Number(mode));
+    let preference;
+    try { preference = readR2Preference(); } catch { throw new Error(t.r2PreferenceFailed); }
+    const operation = r2Runtime.measure(sensor, preference.mode === "single" ? 1 : preference.count);
     cancelR2 = operation.cancel;
     try { return await operation.result; }
     catch (e) {
@@ -583,6 +605,7 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
   }
   // Settings: discovery does not install a driver or change which driver owns the R2.
   async function loadR2() {
+    loadR2Preference();
     await findR2();
     let state = "";
     try {
@@ -2478,6 +2501,8 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
     await loadR2();
     if (searched && !r2) say(t.r2None, "error");
   }); };
+  $("r2-mode").onchange = saveR2Preference;
+  $("r2-count").onchange = saveR2Preference;
   // A level on for the first time comes with its token; off keeps the token for next time.
   $("mcp-access").onchange = () => { void run(async () => {
     const access = ($("mcp-access") as HTMLSelectElement).value;
@@ -2930,6 +2955,8 @@ ${CHOICE_DIALOG_CSS}
 <h2 class="set-group">${esc(t.r2Title)}</h2>
 <div class="set-row"><span class="set-text"><span class="set-title" id="r2-state"></span><span class="set-hint">${esc(t.r2Help)}</span></span>
 <span class="set-control"><button type="button" id="r2-search" class="secondary small">${esc(t.r2Search)}</button></span></div>
+<div class="set-row"><span class="set-text"><span class="set-title">${esc(t.r2Mode)}</span><span class="set-hint">${esc(t.r2AverageHelp)}</span></span>
+<span class="set-control"><select id="r2-mode" aria-label="${esc(t.r2Mode)}"><option value="single">${esc(t.r2Single)}</option><option value="average">${esc(t.r2AverageMode)}</option></select><span id="r2-count-control" hidden><select id="r2-count" aria-label="${esc(t.r2Count)}">${Array.from({ length: 9 }, (_, i) => `<option value="${i + 2}">${i + 2}</option>`).join("")}</select></span></span></div>
 <div class="set-head"><h2 class="set-group">${esc(t.groupGrinders)}</h2><button type="button" id="grinder-add" class="secondary small">+ ${esc(t.addGrinder)}</button></div>
 <p class="set-hint set-intro">${esc(t.grindersHelp)}</p>
 <div id="grinder-rows"></div>
@@ -2967,5 +2994,5 @@ ${CHOICE_DIALOG_CSS}
 <dialog id="picker"><div class="dialog-head"><h2>${esc(t.chooseCoffee)}</h2><label class="switch finished"><input type="checkbox" class="sw" id="picker-finished"> ${esc(t.showFinished)}</label><button type="button" id="picker-add" class="secondary">+ ${esc(t.addCoffee)}</button><button type="button" id="picker-close" class="secondary">${esc(t.close)}</button></div><div class="toolbar"><div id="picker-filters" class="filters"></div><input id="picker-search" type="search" placeholder="${esc(t.searchPlaceholder)}" aria-label="${esc(t.searchPlaceholder)}"><button type="button" id="picker-clear" class="secondary clear-filters" hidden>${esc(t.clearFilters)}</button><span id="picker-hint" class="muted">${esc(t.pickerHint)}</span></div><div id="picker-history" class="coffee-history" role="status" aria-live="polite" hidden></div><div id="picker-list"></div></dialog>
 </main>
 <footer id="actions" hidden><span id="unsaved-note" class="pill unsaved" role="status" hidden>${esc(t.unsaved)}</span><button type="button" id="act-cancel" class="secondary">${esc(t.cancel)}</button><button type="button" id="act-back" class="secondary" hidden>← ${esc(t.back)}</button><button type="button" id="act-done">${esc(t.done)}</button></footer>
-<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()}, ${createRatingSlider.toString()}, ${askChoices.toString()}, ${createChartReadout.toString()}, ${JSON.stringify(BALANCES)}, ${JSON.stringify(BODIES)}, ${createShotThumb.toString()}, ${createRefractometerRuntime.toString()});</script></body></html>`;
+<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()}, ${createRatingSlider.toString()}, ${askChoices.toString()}, ${createChartReadout.toString()}, ${JSON.stringify(BALANCES)}, ${JSON.stringify(BODIES)}, ${createShotThumb.toString()}, ${createRefractometerRuntime.toString()}, ${parseRefractometerPreference.toString()});</script></body></html>`;
 }

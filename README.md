@@ -61,6 +61,10 @@ Streamline with DYE2 on clears the coffee, grinder and RPM after each shot; Bean
 The compact R2 button beside TDS requires the separately installed
 [community driver v0.2.0](https://github.com/Sabotage1/decaid-difluid-r2/releases/tag/v0.2.0) or newer for
 **Single** and **Average ×2–×10**, using the R2's own aggregate result. There is no native-driver fallback.
+Choose the mode and count in **Settings → When I press the R2 button**; the Shot button starts that saved
+measurement immediately, with no chooser. Count is shown only for Average and retained when switching to Single.
+The browser remembers `{mode, count}` under `bean-journal.r2`; the initial choice is Single, with average count 3.
+Unavailable or malformed browser storage is reported; choose the setting again to repair an invalid stored value.
 **Average changes the R2's stored number-of-tests setting.** Only one driver should own the R2 connection; follow
 the driver's installation guide to connect through it rather than native Decaid. Bean Journal neither installs the
 driver nor changes Bluetooth ownership. When the driver/sensor is missing, the page tells you to install/load the
@@ -275,6 +279,11 @@ and returns parsed JSON; on HTTP errors it must throw an Error carrying the serv
 `subscribe(path, snapshot, failed)` opens the sensor WebSocket **before** the command, resolves a disposal
 function when ready, and reports stream errors/close. Browser hosts can serialize the factory's `toString()`;
 it needs no `URL` class or imported runtime values.
+
+`parseRefractometerPreference(value)` returns `{mode: "single" | "average", count: number}`. Missing (`null` or
+`undefined`) means Single/count 3; other inputs require a valid mode and integer count 2–10 or throw
+`invalidArguments`. It is self-contained for browser serialization; each host chooses its own storage namespace.
+This is a browser UI preference; MCP's explicit `count` contract is unchanged.
 
 `runtime.discover(sensors)` returns `{id, name, average: true}[]` only for the community driver's sensor prefix,
 object reading channel and all three commands. `runtime.measure(sensor, count = 1)` returns `{result: Promise<number>,

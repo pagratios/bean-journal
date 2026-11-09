@@ -6,7 +6,8 @@ import { transformSync } from "esbuild";
 import { texts } from "./i18n";
 import { page } from "./ui";
 import { askChoices, CHOICE_DIALOG_CSS, createPointerGuard, createRatingSlider, RATING_SLIDER_CSS,
-  createChartReadout, CHART_READOUT_CSS, createShotThumb, SHOT_THUMB_CSS, createRefractometerRuntime } from "./core";
+  createChartReadout, CHART_READOUT_CSS, createShotThumb, SHOT_THUMB_CSS, createRefractometerRuntime,
+  parseRefractometerPreference } from "./core";
 
 const source = readFileSync(resolve("src", "ui.ts"), "utf8");
 const theme = readFileSync(resolve("src", "core", "theme.css"), "utf8");
@@ -317,7 +318,7 @@ describe("coffee resting-age labels", () => {
 const prefix = source.slice(source.indexOf("function client("), source.indexOf("  // ── Tabs ──"));
 const click = source.slice(source.indexOf("    r2Button.onclick ="), source.indexOf('    // Beside the "TDS %" caption'));
 const code = transformSync(`${prefix}
-  return { findR2, searchR2IfMissing, searchR2, closeOverlay, fromSkin, theme: document.documentElement.dataset.theme,
+  return { findR2, searchR2IfMissing, searchR2, closeOverlay, loadR2Preference, saveR2Preference, fromSkin, theme: document.documentElement.dataset.theme,
     bindMeasurement(r2Button, tds) { ${click} } };
 }`, { format: "cjs", loader: "ts" }).code;
 
@@ -328,6 +329,8 @@ type MeasurementButton = {
 };
 type TdsInput = { value: string; isConnected: boolean; dispatchEvent: (event: Event) => void };
 type R2Client = {
+  loadR2Preference: () => void;
+  saveR2Preference: () => void;
   findR2: () => Promise<boolean>;
   searchR2IfMissing: () => Promise<void>;
   searchR2: () => Promise<boolean>;
@@ -345,7 +348,14 @@ function setup({ found = false, state = "sleeping", hidden = false, search = "?v
   const elements = {
     "view-shot": { hidden },
     notice: { textContent: "", className: "" },
+    "r2-mode": { value: "single" },
+    "r2-count": { value: "3" },
+    "r2-count-control": { hidden: true },
   };
+  const storage = new Map<string, string>();
+  if (count !== 1) storage.set("bean-journal.r2", JSON.stringify({ mode: "average", count }));
+  const localStorage = { getItem: vi.fn((key: string) => storage.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => { storage.set(key, value); }) };
   const button = { hidden: true, setAttribute: vi.fn() };
   const fetcher = vi.fn(async (url: string, _init?: RequestInit): Promise<Response> => {
     if (url === "/api/v1/sensors") return Response.json(found ? [sensor] : []);
@@ -359,8 +369,9 @@ function setup({ found = false, state = "sleeping", hidden = false, search = "?v
   const dataset: Record<string, string> = {};
   const assign = vi.fn(), back = vi.fn(), postMessage = vi.fn(), onPageEvent = vi.fn();
   const choose = vi.fn(async () => String(count));
-  const client: R2Client = runInNewContext(`${code}\nclient(texts, undefined, undefined, choose, undefined, undefined, undefined, undefined, makeRefractometer)`, {
-    module: { exports: {} }, texts, makeRefractometer: createRefractometerRuntime, URLSearchParams, URL, Date, Number, Error, Event, setTimeout, Map, WeakMap,
+  const client: R2Client = runInNewContext(`${code}\nclient(texts, undefined, undefined, choose, undefined, undefined, undefined, undefined, makeRefractometer, parseR2Preference)`, {
+    module: { exports: {} }, texts, localStorage, parseR2Preference: parseRefractometerPreference,
+    makeRefractometer: createRefractometerRuntime, URLSearchParams, URL, Date, Number, Error, Event, setTimeout, Map, WeakMap,
     clearTimeout, choose, WebSocket: class {
       onopen?: () => void;
       constructor() { setTimeout(() => this.onopen?.(), 0); }
@@ -378,7 +389,7 @@ function setup({ found = false, state = "sleeping", hidden = false, search = "?v
     },
     fetch: fetcher,
   });
-  return { client, fetcher, elements, button, dataset, assign, back, postMessage, onPageEvent, choose };
+  return { client, fetcher, elements, button, dataset, assign, back, postMessage, onPageEvent, choose, storage, localStorage };
 }
 
 describe("fullscreen page navigation", () => {
@@ -442,6 +453,46 @@ describe("theme", () => {
 });
 
 describe("R2 controls on the tablet page", () => {
+  it("persists mode and count from Settings and retains count when switching to Single", () => {
+    const t = setup();
+    t.client.loadR2Preference();
+    expect(t.elements["r2-mode"].value).toBe("single");
+    expect(t.elements["r2-count"].value).toBe("3");
+    expect(t.elements["r2-count-control"].hidden).toBe(true);
+    t.elements["r2-mode"].value = "average";
+    t.elements["r2-count"].value = "7";
+    t.client.saveR2Preference();
+    expect(JSON.parse(t.storage.get("bean-journal.r2")!)).toEqual({ mode: "average", count: 7 });
+    expect(t.elements["r2-count-control"].hidden).toBe(false);
+    t.elements["r2-mode"].value = "single";
+    t.client.saveR2Preference();
+    expect(JSON.parse(t.storage.get("bean-journal.r2")!)).toEqual({ mode: "single", count: 7 });
+    t.elements["r2-mode"].value = "average";
+    t.client.loadR2Preference();
+    expect(t.elements["r2-mode"].value).toBe("single");
+  });
+
+  it("reports malformed storage and allows Settings to replace it", () => {
+    const t = setup();
+    t.storage.set("bean-journal.r2", "invalid JSON");
+    t.client.loadR2Preference();
+    expect(t.elements.notice.textContent).toBe(texts.r2PreferenceFailed);
+    t.elements["r2-mode"].value = "average";
+    t.elements["r2-count"].value = "10";
+    t.client.saveR2Preference();
+    expect(JSON.parse(t.storage.get("bean-journal.r2")!)).toEqual({ mode: "average", count: 10 });
+  });
+
+  it("surfaces storage write errors without using an unsaved selection", () => {
+    const t = setup();
+    t.localStorage.setItem.mockImplementationOnce(() => { throw new Error("Unavailable"); });
+    t.elements["r2-mode"].value = "average";
+    t.elements["r2-count"].value = "5";
+    t.client.saveR2Preference();
+    expect(t.elements.notice.textContent).toBe(texts.r2PreferenceFailed);
+    expect(t.elements["r2-mode"].value).toBe("single");
+    expect(t.storage.size).toBe(0);
+  });
   it("shows install/load/connect instructions instead of falling back to a native R2", async () => {
     const t = setup({ found: true });
     t.fetcher.mockResolvedValueOnce(Response.json([{ id: "native", info: { name: "DiFluid R2",
@@ -533,10 +584,7 @@ describe("R2 controls on the tablet page", () => {
       commandId: count === 1 ? "measure" : "measureAverage", params: count === 1 ? {} : { count },
     });
     expect(JSON.parse(String(requests[1]![1]!.body))).toEqual({ commandId: "getReading", params: {} });
-    expect(t.choose).toHaveBeenCalledWith(texts.r2AverageHelp, expect.arrayContaining([
-      expect.objectContaining({ label: texts.r2Single, value: "1" }),
-      expect.objectContaining({ label: "Average ×10", value: "10" }),
-    ]), "cancel");
+    expect(t.choose).not.toHaveBeenCalled();
     expect(tds.value).toBe("9.37");
     expect(tds.dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "input", bubbles: true }));
     t.fetcher.mockImplementationOnce(async () => Response.json({ status: "error", message: "Exception: R2 disconnected" }, { status: 500 }));

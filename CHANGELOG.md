@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.14
+
+- Choose R2 Single or Average and its 2–10 tests in Settings, remembered on this browser. The Shot button starts
+  the saved measurement immediately, without asking each time. Keep the previous Single/count 3 default and
+  retain the average count when switching to Single; show the stored-count warning in Settings.
+- Export strict product-neutral R2 preference parsing from the core. Surface unavailable or malformed browser
+  storage instead of silently measuring with a different setting.
+
 ## 0.1.13
 
 - Require the community DiFluid R2 v0.2.0 driver for Single and the device's Average of 2–10 tests, without a

@@ -1,4 +1,16 @@
 export type Refractometer = { id: string; name: string; average: true };
+export type RefractometerPreference = { mode: "single" | "average"; count: number };
+
+/** An absent preference starts with Single; malformed saved settings must be surfaced by the host. */
+export function parseRefractometerPreference(value: unknown): RefractometerPreference {
+  if (value == null) return { mode: "single", count: 3 };
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("invalidArguments");
+  const preference = value as Record<string, unknown>;
+  if ((preference.mode !== "single" && preference.mode !== "average") || typeof preference.count !== "number"
+    || !Number.isInteger(preference.count) || preference.count < 2 || preference.count > 10) throw new Error("invalidArguments");
+  return { mode: preference.mode, count: preference.count };
+}
+
 export type SensorSubscription = (
   path: string, snapshot: (value: unknown) => void, failed: (error: Error) => void,
 ) => Promise<() => void>;
