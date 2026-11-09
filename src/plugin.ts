@@ -13,6 +13,7 @@ import { deleteProfile } from "./core/profiles";
 import { createRatioMemory, type RatioChange } from "./core/ratio-memory";
 import { createCoffeeHistory, sortCoffees } from "./core/coffee-order";
 import { readShotThumbs } from "./core/shot-thumbs";
+import { createRefractometerRuntime, sensorSubscription, type SensorTransport } from "./core/refractometer";
 import { copy, page } from "./ui";
 import { MCP_CONFIRMS, MCP_LEVELS, MCP_TOKEN, mcpMessage, rateLimit, type McpConfirm, type McpLevel } from "./mcp";
 
@@ -40,6 +41,7 @@ type Host = {
   log(message: string): void;
   storage(command: { type: "read" | "write"; key: string; namespace: string; data?: unknown }): void;
   emit?(event: string, payload: unknown): void;
+  transport?: SensorTransport;
 };
 type HttpRequest = { endpoint: string; method: string; headers: Record<string, string>; body: unknown; query?: Record<string, string> };
 type HttpResponse = { status: number; headers: Record<string, string>; body: string };
@@ -83,6 +85,17 @@ export function createPlugin(host: Host) {
     const detail = e instanceof Error ? text((e as Error & { detail?: unknown }).detail) : "";
     host.log(`[bean-journal] ${what}: ${message(e)}${detail ? ` (${detail})` : ""}`);
   };
+  const r2Runtime = createRefractometerRuntime({
+    request: decaid,
+    subscribe: (path, snapshot, failed) => {
+      if (!host.transport) throw Object.assign(new Error("sensorFailed"), { detail: "Decaid sensor transport is unavailable" });
+      return sensorSubscription(host.transport, log("R2 transport"))(path, snapshot, failed);
+    },
+  });
+  type Measurement = { id: string; status: "measuring" | "completed" | "failed"; cancel: () => void; value?: unknown; error?: unknown };
+  const measurements = new Map<string, Measurement>();
+  const measurementNonce = Math.random().toString(36).slice(2);
+  let measurementId = 0;
   function serial<T>(task: () => Promise<T>): Promise<T> {
     const next = work.then(() => { if (stopped) throw new Error("stopped"); return task(); });
     work = next.then(() => undefined, () => undefined);
@@ -1125,14 +1138,7 @@ export function createPlugin(host: Host) {
     return { preferences: preferences(), reloaded: true };
   }
   async function refractometers() {
-    return items(await local("/sensors")).filter((s) => {
-      const info = optionalObject(s.info);
-      const channels = [...items(info.dataChannels ?? []), ...items(info.data ?? [])];
-      return items(info.commands ?? []).some((c) => c.id === "measure") && channels.some((c) => c.key === "tds");
-    }).map((s) => {
-      if (!text(s.id)) throw new Error("invalidData");
-      return { id: text(s.id), name: text(optionalObject(s.info).name) };
-    }).sort((a, b) => Number(/\bR2\b/i.test(b.name)) - Number(/\bR2\b/i.test(a.name)));
+    return r2Runtime.discover(await local("/sensors"));
   }
   async function searchRefractometer() {
     await idle();
@@ -1151,13 +1157,45 @@ export function createPlugin(host: Host) {
     const sensors = await refractometers();
     const sensor = b.sensorId == null ? sensors[0] : sensors.find((s) => s.id === b.sensorId);
     if (!sensor) throw new Error("sensorNotFound");
-    const result = object(await local(`/sensors/${enc(sensor.id)}/execute`, "POST", { commandId: "measure", params: { timeout: 30 } }));
-    if (result.status === "error") throw Object.assign(new Error("sensorFailed"), { detail: text(result.message ?? result.error) });
-    const reading = object(object(result.result).reading);
-    const tds = number(reading.tds);
-    if (!tds || tds <= 0 || tds > 30) throw new Error("invalidData");
-    const shot = id ? (await serial(() => rateShot({ shotId: id, tds }))).shot : null;
-    return { sensor: sensor.id, tds, ...(shot ? { shot } : {}) };
+    if ([...measurements.values()].some((m) => m.status === "measuring")) {
+      throw Object.assign(new Error("sensorFailed"), { detail: "A measurement is already in progress" });
+    }
+    const operation = r2Runtime.measure(sensor, b.count === undefined ? 1 : number(b.count) ?? NaN);
+    let cancelled = false;
+    const cancel = () => { cancelled = true; operation.cancel(); };
+    const finish = async () => {
+      const tds = await operation.result;
+      if (stopped || cancelled) throw new Error("stopped");
+      const shot = id ? (await serial(() => {
+        if (cancelled) throw new Error("stopped");
+        return rateShot({ shotId: id, tds });
+      })).shot : null;
+      return { sensor: sensor.id, tds, ...(shot ? { shot } : {}) };
+    };
+    // Decaid ends plugin HTTP requests after 30 s; averages must live beyond their initiating request.
+    for (const [key, value] of measurements) if (value.status !== "measuring") measurements.delete(key);
+    const measurement: Measurement = { id: `${measurementNonce}-${++measurementId}`, status: "measuring", cancel };
+    measurements.set(measurement.id, measurement);
+    void finish().then((value) => {
+      measurement.value = value;
+      measurement.status = "completed";
+    }, (error: unknown) => {
+      measurement.error = error;
+      measurement.status = "failed";
+      log("R2 measurement")(error);
+    });
+    return { measurementId: measurement.id, status: measurement.status };
+  }
+  function measurementStatus(b: ObjectData) {
+    const measurement = measurements.get(text(b.measurementId));
+    if (!measurement) throw new Error("notFound");
+    if (b.cancel === true && measurement.status === "measuring") {
+      measurement.cancel();
+      return { measurementId: measurement.id, status: "cancelled" };
+    }
+    if (measurement.status === "failed") throw measurement.error;
+    return { measurementId: measurement.id, status: measurement.status,
+      ...(measurement.status === "completed" ? object(measurement.value) : {}) };
   }
   /** The address an assistant on the home network uses: Decaid's own idea of the tablet's IP, when it has one. */
   async function lanUrl(path: string) {
@@ -1223,6 +1261,7 @@ export function createPlugin(host: Host) {
       }
       case "search-refractometer": return searchRefractometer();
       case "measure-tds": return measureTds(b);
+      case "tds-measurement": return measurementStatus(b);
       case "dial-in": return dialIn(b.coffeeId);
       case "equipment": return equipment();
       case "profiles": return profileList();
@@ -1359,6 +1398,8 @@ export function createPlugin(host: Host) {
     },
     onUnload() {
       stopped = true;
+      for (const measurement of measurements.values()) measurement.cancel();
+      measurements.clear();
       coffeeHistory.invalidate();
       clearTimeout(timer);
       clearTimeout(sticky);

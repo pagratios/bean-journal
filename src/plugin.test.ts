@@ -33,7 +33,8 @@ const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach((f) => f()); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 type World = { beans?: ObjectData[]; batches?: ObjectData[]; shots?: ObjectData[]; latencyMs?: number;
-  phase?: string; slowWorkflow?: number; settingsStatus?: number; sensors?: ObjectData[]; workflowEvents?: boolean };
+  phase?: string; slowWorkflow?: number; settingsStatus?: number; sensors?: ObjectData[]; workflowEvents?: boolean;
+  transport?: Parameters<typeof createPlugin>[0]["transport"]; sensorExecute?: (body: ObjectData) => Promise<Response> };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 function setup(settings: ObjectData = {}, world: World = {}) {
@@ -190,11 +191,13 @@ function setup(settings: ObjectData = {}, world: World = {}) {
       { id: "temp", info: { name: "Thermometer", data: [{ key: "temperatureC" }], commands: [{ id: "measure" }] } },
     ]);
     if (route === "/devices/scan") return json([]);
-    if (/^\/sensors\/[^/]+\/execute$/.test(route)) return json({ status: "ok", result: { reading: { tds: 9.41 } } });
+    if (/^\/sensors\/[^/]+\/execute$/.test(route)) return world.sensorExecute ? world.sensorExecute(b)
+      : json({ status: "ok", result: { reading: { tds: 9.41 } } });
     throw new Error(`Unexpected ${method} ${url}`);
   });
   vi.stubGlobal("fetch", fetcher);
   const host: Parameters<typeof createPlugin>[0] = {
+    transport: world.transport,
     log: () => {},
     emit: (event, payload) => { emitted.push({ event, payload }); },
     storage: () => { throw new Error("The plugin keeps nothing in plugin storage"); },
@@ -1116,15 +1119,100 @@ describe("Bean Journal plugin", () => {
     expect((await failing.control({ action: "update-preferences", onCoffeeChoice: "last" })).data.code).toBe("settingsFailed");
   });
 
-  it("measures TDS with the refractometer and saves it on the named shot", async () => {
+  it("refuses native R2 sensors and explains how to install, load and connect the required driver", async () => {
     const t = setup();
     t.shots.set("s1", makeShot("s1", -60));
-    expect(await t.ok({ action: "refractometer" })).toEqual({ sensors: [{ id: "AA:BB", name: "DiFluid R2" }], preferred: "AA:BB" });
-    expect(await t.ok({ action: "search-refractometer" })).toMatchObject({ preferred: "AA:BB" });
-    expect(t.calls.some((c) => c.url.endsWith("/devices/scan?connect=false"))).toBe(true);
-    const measured = await t.ok({ action: "measure-tds", shotId: "s1" });
-    expect(measured).toMatchObject({ sensor: "AA:BB", tds: 9.41, shot: { id: "s1", tds: 9.41 } });
+    expect(await t.ok({ action: "refractometer" })).toEqual({ sensors: [], preferred: null });
+    expect(await t.control({ action: "measure-tds", shotId: "s1" })).toMatchObject({
+      data: { code: "sensorNotFound", error: expect.stringContaining("Install and load the community DiFluid R2 plugin") },
+    });
     expect((await t.control({ action: "measure-tds", sensorId: "nope" })).data.code).toBe("sensorNotFound");
+    expect(t.calls.some((c) => c.url.endsWith("/execute"))).toBe(false);
+  });
+
+  function communityR2() {
+    const id = "plugin:difluid-r2.reaplugin:difluid-r2:AA:BB";
+    let ready = false, error = "";
+    let listener!: (event: { type: string; data?: unknown }) => void;
+    const close = vi.fn(async () => {});
+    const world: World = {
+      sensors: [{ id, info: { name: "DiFluid R2", data: [{ key: "reading" }, { key: "measuring" }, { key: "error" }],
+        commands: [{ id: "measure" }, { id: "measureAverage" }, { id: "getReading" }] } }],
+      transport: {
+        open: async () => ({ handle: "r2" }),
+        onEvent: (_handle, callback) => { listener = callback; },
+        close,
+      },
+      sensorExecute: async (b) => {
+        if (error) return json({ status: "error", message: error }, 500);
+        if (b.commandId === "getReading") return ready ? json({ status: "ok", result: { reading: { tds: 9.37 } } })
+          : json({ status: "error", message: "Error: DiFluid R2 has no completed reading" }, 500);
+        listener({ type: "data", data: JSON.stringify({ status: "average_started", reading: {}, measuring: true, error: "" }) });
+        return json({ status: "ok", result: { started: true } });
+      },
+    };
+    return { id, world, close, finish: () => { ready = true; }, fail: (message: string) => { error = message; } };
+  }
+
+  it.each([1, 7])("keeps count %i alive beyond the initiating HTTP request and saves only its final TDS", async (count) => {
+    vi.useFakeTimers();
+    const r2 = communityR2(), t = setup({}, r2.world);
+    t.shots.set("s1", makeShot("s1", -60));
+    expect(await t.ok({ action: "refractometer" })).toEqual({ sensors: [{ id: r2.id, name: "DiFluid R2", average: true }], preferred: r2.id });
+    expect(await t.ok({ action: "search-refractometer" })).toMatchObject({ preferred: r2.id });
+    const pending = await t.ok({ action: "measure-tds", count, shotId: "s1" });
+    expect(pending).toMatchObject({ status: "measuring", measurementId: expect.any(String) });
+    await vi.advanceTimersByTimeAsync(31000);
+    expect(await t.ok({ action: "tds-measurement", measurementId: pending.measurementId })).toEqual(pending);
+    expect(t.calls.filter((c) => c.method === "PUT" && c.url.endsWith("/shots/s1"))).toHaveLength(0);
+    expect(t.calls.find((c) => c.body !== null && object(c.body).commandId === (count === 1 ? "measure" : "measureAverage"))?.body)
+      .toEqual({ commandId: count === 1 ? "measure" : "measureAverage", params: count === 1 ? {} : { count } });
+    r2.finish();
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await t.ok({ action: "tds-measurement", measurementId: pending.measurementId });
+    expect(result).toMatchObject({ status: "completed", sensor: r2.id, tds: 9.37, shot: { id: "s1", tds: 9.37 } });
+    expect(t.calls.filter((c) => c.method === "PUT" && c.url.endsWith("/shots/s1"))).toHaveLength(1);
+    expect(r2.close).toHaveBeenCalledOnce();
+  });
+
+  it.each(["Error: DiFluid R2 is busy", "Error: DiFluid R2 is not connected"])("surfaces %s and never saves a reading", async (error) => {
+    vi.useFakeTimers();
+    const r2 = communityR2(), t = setup({}, r2.world);
+    t.shots.set("s1", makeShot("s1", -60));
+    r2.fail(error);
+    const pending = await t.ok({ action: "measure-tds", shotId: "s1" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await t.control({ action: "tds-measurement", measurementId: pending.measurementId }))
+      .toMatchObject({ status: 502, data: { code: "sensorFailed", error: expect.stringContaining(error) } });
+    expect(t.calls.some((c) => c.method === "PUT" && c.url.endsWith("/shots/s1"))).toBe(false);
+  });
+
+  it.each(["cancel", "unload"])("prevents shot writes after measurement %s", async (action) => {
+    vi.useFakeTimers();
+    const r2 = communityR2(), t = setup({}, r2.world);
+    t.shots.set("s1", makeShot("s1", -60));
+    const pending = await t.ok({ action: "measure-tds", shotId: "s1" });
+    await vi.advanceTimersByTimeAsync(0);
+    if (action === "unload") t.plugin.onUnload();
+    else expect(await t.ok({ action: "tds-measurement", measurementId: pending.measurementId, cancel: true }))
+      .toMatchObject({ status: "cancelled" });
+    r2.finish();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.calls.some((c) => c.method === "PUT" && c.url.endsWith("/shots/s1"))).toBe(false);
+    expect(r2.close).toHaveBeenCalledOnce();
+  });
+
+  it("returns completed TDS without changing any shot when no shot id is given", async () => {
+    vi.useFakeTimers();
+    const r2 = communityR2(), t = setup({}, r2.world);
+    const pending = await t.ok({ action: "measure-tds", count: 2 });
+    r2.finish();
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await t.ok({ action: "tds-measurement", measurementId: pending.measurementId });
+    expect(result).toMatchObject({ status: "completed", tds: 9.37 });
+    expect(result).not.toHaveProperty("shot");
+    expect(t.calls.some((c) => c.method === "PUT" && c.url.includes("/shots/"))).toBe(false);
+    expect((await t.control({ action: "measure-tds", count: 11 })).data.code).toBe("invalidArguments");
   });
 
   it("refuses other websites and requests without the page's header, and serves the page", async () => {

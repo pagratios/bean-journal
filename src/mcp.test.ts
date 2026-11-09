@@ -50,12 +50,22 @@ describe("MCP messages", () => {
     expect(MCP_TOKEN.test("bjm_short")).toBe(false);
   });
 
+  it("forwards counted measurements, result polling and cancellation to the page actions", async () => {
+    const ctx = context({ level: "shots", confirm: "none" });
+    await mcpMessage(call("measure_tds", { count: 7, shot_id: "s1" }), ctx);
+    expect(ctx.act).toHaveBeenLastCalledWith("measure-tds", { action: "measure-tds", count: 7, shotId: "s1", sensorId: undefined });
+    await mcpMessage(call("get_tds_measurement", { measurement_id: "m1" }), ctx);
+    expect(ctx.act).toHaveBeenLastCalledWith("tds-measurement", { action: "tds-measurement", measurementId: "m1" });
+    await mcpMessage(call("cancel_tds_measurement", { measurement_id: "m1" }), ctx);
+    expect(ctx.act).toHaveBeenLastCalledWith("tds-measurement", { action: "tds-measurement", measurementId: "m1", cancel: true });
+  });
+
   it("lists only the tools of the level, each level including the ones before", () => {
     const names = (level: McpContext["level"]) => mcpToolList(level).map((t) => t.name);
     expect(names("off")).toEqual([]);
     expect(names("read")).toEqual(["get_status", "get_dial_in_context", "list_coffees", "get_shot", "list_shots", "list_profiles",
-      "list_equipment", "get_preferences", "get_refractometer"]);
-    expect(names("shots")).toEqual([...names("read"), "rate_shot", "delete_shot", "measure_tds", "set_next_shot", "add_coffee", "update_coffee"]);
+      "list_equipment", "get_preferences", "get_refractometer", "get_tds_measurement"]);
+    expect(names("shots")).toEqual([...names("read"), "rate_shot", "delete_shot", "measure_tds", "cancel_tds_measurement", "set_next_shot", "add_coffee", "update_coffee"]);
     expect(names("full")).toEqual([...names("shots"), "create_profile", "update_profile", "delete_profile", "update_preferences", "search_refractometer",
       "choose_coffee", "load_profile", "load_shot_settings"]);
     expect(names("full")).toHaveLength(MCP_TOOLS.length);

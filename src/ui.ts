@@ -5,6 +5,7 @@ import { createRatingSlider, RATING_SLIDER_CSS } from "./core/rating-controls";
 import { askChoices, CHOICE_DIALOG_CSS, type DialogChoice } from "./core/choice-dialog";
 import { createChartReadout, CHART_READOUT_CSS } from "./core/chart-readout";
 import { createShotThumb, SHOT_THUMB_CSS, type ShotThumb } from "./core/shot-thumbs";
+import { createRefractometerRuntime, type Refractometer } from "./core/refractometer";
 
 export type { Copy };
 declare const __DECAID_COPY__: Copy;
@@ -16,7 +17,7 @@ export function copy(): Copy {
 // Serialized into the page: browser helpers must remain inside this function.
 function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRatingSlider: typeof createRatingSlider,
   showChoices: typeof askChoices, makeChartReadout: typeof createChartReadout, balances: typeof BALANCES, bodies: typeof BODIES,
-  makeShotThumb: typeof createShotThumb) {
+  makeShotThumb: typeof createShotThumb, makeRefractometer: typeof createRefractometerRuntime) {
   type Data = Record<string, unknown>;
   type Coffee = {
     id: string; beanId: string; batchId: string | null; roaster: string; name: string;
@@ -178,6 +179,7 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
   // goes back to the skin.
   const toParent = (message: Data) => { try { window.parent?.postMessage(message, "*"); } catch { /* not embedded */ } };
   const closeOverlay = () => {
+    cancelR2?.();
     if (returnTo) { backToSkin(); return; }
     toParent({ type: "streamline:close" });
   };
@@ -457,31 +459,64 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
     (await ask(text, [{ label: t.cancel, value: "no", kind: "secondary" }, { label: ok, value: "yes" }], "no")) === "yes";
   const closeMessages = () => document.querySelectorAll<HTMLDialogElement>("dialog.msg").forEach((d) => d.close());
 
-  // ── Refractometer: Decaid connects a DiFluid R2 itself and offers it as a sensor with a "measure" command. ──
+  // ── Refractometer: the community driver owns Bluetooth; this page only consumes its sensor API. ──
   // The page is served by Decaid, so its Sensors API is on this same origin.
   const R2_ICON = `<svg viewBox="0 0 32 32" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="8" y="1" width="16" height="30" rx="8" fill="currentColor" fill-opacity=".12"/><circle cx="16" cy="8" r="4.7"/><path d="M13.63 6.16A3 3 0 0 1 18.13 5.88"/><rect x="11" y="15" width="10" height="7" rx=".8" fill="currentColor" fill-opacity=".8" stroke="none"/><circle cx="16" cy="26" r="2.2"/></svg>`;
   let r2: string | null = null;
   let r2Measuring = false;
+  let r2Sensor: Refractometer | undefined;
+  let cancelR2: (() => void) | undefined;
+  const r2Runtime = makeRefractometer({
+    request: async (path, method = "GET", body) => {
+      const response = await fetch(`/api/v1${path}`, {
+        method, headers: { "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      const value = await response.json() as Data;
+      if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), {
+        detail: str(value.message ?? value.error) || `HTTP ${response.status}`,
+      });
+      return value;
+    },
+    subscribe: (path, snapshot, failed) => new Promise((resolve, reject) => {
+      const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}`);
+      let opened = false, disposed = false;
+      const close = () => { disposed = true; clearTimeout(timer); socket.close(); };
+      const timer = setTimeout(() => { close(); reject(new Error("R2 connection timed out")); }, 5000);
+      socket.onopen = () => { opened = true; clearTimeout(timer); resolve(close); };
+      socket.onmessage = (event) => {
+        try { snapshot(JSON.parse(String(event.data))); } catch { failed(new Error("Invalid sensor snapshot")); }
+      };
+      socket.onerror = () => {
+        if (!opened) { close(); reject(new Error("R2 connection failed")); }
+        else failed(new Error("R2 connection failed"));
+      };
+      socket.onclose = () => {
+        if (disposed) return;
+        if (!opened) { clearTimeout(timer); reject(new Error("R2 disconnected")); }
+        else failed(new Error("R2 disconnected"));
+      };
+    }),
+  });
+  addEventListener("pagehide", () => cancelR2?.());
   async function findR2() {
     let read = true;
     try {
       const response = await fetch("/api/v1/sensors");
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const sensors = list(await response.json());
-      // Any sensor that measures TDS will do; an R2 first. Decaid's docs name the channels dataChannels, Decaid sends data.
-      const fits = sensors.filter((s) => {
-        const info = (s.info ?? {}) as Data;
-        const channels = [...list(info.dataChannels), ...list(info.data)];
-        return list(info.commands).some((c) => c.id === "measure") && channels.some((c) => c.key === "tds");
-      });
-      const best = fits.find((s) => /\bR2\b/i.test(str(((s.info ?? {}) as Data).name))) ?? fits[0];
-      r2 = best ? str(best.id) || null : null;
+      r2Sensor = r2Runtime.discover(await response.json())[0];
+      r2 = r2Sensor?.id ?? null;
+      if (!r2 && !$("view-shot").hidden) say(t.r2None, "error");
     } catch (e) {
       r2 = null;
       read = false;
       say(t.r2SearchFailed.replace("{why}", e instanceof Error ? e.message : t.failed), "error");
     }
-    document.querySelectorAll<HTMLButtonElement>("button.r2").forEach((b) => { b.hidden = !r2; });
+    document.querySelectorAll<HTMLButtonElement>("button.r2").forEach((b) => {
+      b.hidden = false;
+      b.title = r2 ? t.r2Measure : t.r2Setup;
+      b.setAttribute("aria-label", b.title);
+    });
     return read;
   }
   // Await the same full scan as Settings: a quick scan returns before the R2 is discovered.
@@ -530,27 +565,30 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
     }
   }
   async function measureR2(): Promise<number> {
-    const response = await fetch(`/api/v1/sensors/${encodeURIComponent(r2 ?? "")}/execute`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ commandId: "measure", params: { timeout: 30 } }),
-    });
-    const value = await response.json().catch(() => ({})) as Data;
-    if (!response.ok || value.status === "error") {
-      throw new Error(str(value.message ?? value.error).replace(/^\w*Exception:\s*/, "") || `HTTP ${response.status}`);
-    }
-    const reading = ((value.result ?? {}) as Data).reading;
-    const tds = num(typeof reading === "object" && reading !== null ? (reading as Data).tds : null);
-    if (tds === null || tds <= 0 || tds > 30) throw new Error(t.failed);
-    return tds;
+    const sensor = r2Sensor;
+    if (!sensor) throw new Error(t.r2None);
+    const mode = await ask(t.r2AverageHelp, [
+      { label: t.cancel, value: "cancel", kind: "secondary" },
+      { label: t.r2Single, value: "1" },
+      ...Array.from({ length: 9 }, (_, i) => ({ label: t.r2Average.replace("{count}", String(i + 2)), value: String(i + 2) })),
+    ], "cancel");
+    if (mode === "cancel") throw new Error(t.cancel);
+    const operation = r2Runtime.measure(sensor, Number(mode));
+    cancelR2 = operation.cancel;
+    try { return await operation.result; }
+    catch (e) {
+      const detail = e instanceof Error ? str((e as Error & { detail?: string }).detail) || e.message : t.failed;
+      throw new Error(detail.replace(/^\w*Exception:\s*/, ""));
+    } finally { cancelR2 = undefined; }
   }
-  // Settings: Decaid connects a sensor as soon as a Bluetooth scan finds it; there is no R2 setting in Decaid.
+  // Settings: discovery does not install a driver or change which driver owns the R2.
   async function loadR2() {
     await findR2();
     let state = "";
     try {
       const response = await fetch("/api/v1/devices");
       const devices = response.ok ? list(await response.json()) : [];
-      const device = devices.find((d) => d.type === "sensor" && (str(d.id) === r2 || /\bR2\b|difluid/i.test(str(d.name))));
+      const device = r2 ? devices.find((d) => d.type === "sensor" && str(d.id) === r2) : undefined;
       state = device ? str(device.state) : "";
     } catch { /* an older Decaid */ }
     $("r2-state").textContent = state === "connected" ? t.r2Connected : r2 ? t.r2Found : t.r2None;
@@ -560,6 +598,7 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
   const views = ["shot", "coffees", "settings", "ai"] as const;
   type View = typeof views[number];
   function show(view: View) {
+    if (view !== "shot") cancelR2?.();
     for (const v of views) {
       $(`view-${v}`).hidden = v !== view;
       $(`tab-${v}`).setAttribute("aria-selected", String(v === view));
@@ -629,6 +668,7 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
 
   // ── Shot view ──
   async function loadShot(afterDelete = false) {
+    cancelR2?.();
     const root = $("shot-body");
     if (!shot) root.replaceChildren(el("p", "muted", t.loading));
     compareFor = null;
@@ -1075,13 +1115,14 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
     const r2Button = el("button", "r2") as HTMLButtonElement;
     r2Button.type = "button";
     r2Button.innerHTML = R2_ICON;
-    r2Button.title = t.r2Measure;
-    r2Button.setAttribute("aria-label", t.r2Measure);
-    r2Button.hidden = !r2;
+    r2Button.title = r2 ? t.r2Measure : t.r2Setup;
+    r2Button.setAttribute("aria-label", r2Button.title);
     r2Button.onclick = async () => {
-      if (r2Measuring || !r2) return;
+      if (r2Measuring) { cancelR2?.(); return; }
+      if (!r2) { say(t.r2None, "error"); return; }
       r2Measuring = true;
-      r2Button.disabled = true;
+      r2Button.title = t.r2Cancel;
+      r2Button.setAttribute("aria-label", t.r2Cancel);
       r2Button.classList.add("measuring");
       try {
         say(t.r2Measuring);
@@ -1095,6 +1136,8 @@ function client(t: Copy, makePointerGuard: typeof createPointerGuard, makeRating
       } finally {
         r2Measuring = false;
         r2Button.disabled = false;
+        r2Button.title = t.r2Measure;
+        r2Button.setAttribute("aria-label", t.r2Measure);
         r2Button.classList.remove("measuring");
       }
     };
@@ -2924,5 +2967,5 @@ ${CHOICE_DIALOG_CSS}
 <dialog id="picker"><div class="dialog-head"><h2>${esc(t.chooseCoffee)}</h2><label class="switch finished"><input type="checkbox" class="sw" id="picker-finished"> ${esc(t.showFinished)}</label><button type="button" id="picker-add" class="secondary">+ ${esc(t.addCoffee)}</button><button type="button" id="picker-close" class="secondary">${esc(t.close)}</button></div><div class="toolbar"><div id="picker-filters" class="filters"></div><input id="picker-search" type="search" placeholder="${esc(t.searchPlaceholder)}" aria-label="${esc(t.searchPlaceholder)}"><button type="button" id="picker-clear" class="secondary clear-filters" hidden>${esc(t.clearFilters)}</button><span id="picker-hint" class="muted">${esc(t.pickerHint)}</span></div><div id="picker-history" class="coffee-history" role="status" aria-live="polite" hidden></div><div id="picker-list"></div></dialog>
 </main>
 <footer id="actions" hidden><span id="unsaved-note" class="pill unsaved" role="status" hidden>${esc(t.unsaved)}</span><button type="button" id="act-cancel" class="secondary">${esc(t.cancel)}</button><button type="button" id="act-back" class="secondary" hidden>← ${esc(t.back)}</button><button type="button" id="act-done">${esc(t.done)}</button></footer>
-<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()}, ${createRatingSlider.toString()}, ${askChoices.toString()}, ${createChartReadout.toString()}, ${JSON.stringify(BALANCES)}, ${JSON.stringify(BODIES)}, ${createShotThumb.toString()});</script></body></html>`;
+<script>(${client.toString()})(${JSON.stringify(t).replace(/</g, "\\u003c")}, ${createPointerGuard.toString()}, ${createRatingSlider.toString()}, ${askChoices.toString()}, ${createChartReadout.toString()}, ${JSON.stringify(BALANCES)}, ${JSON.stringify(BODIES)}, ${createShotThumb.toString()}, ${createRefractometerRuntime.toString()});</script></body></html>`;
 }

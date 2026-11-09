@@ -6,7 +6,7 @@ import { transformSync } from "esbuild";
 import { texts } from "./i18n";
 import { page } from "./ui";
 import { askChoices, CHOICE_DIALOG_CSS, createPointerGuard, createRatingSlider, RATING_SLIDER_CSS,
-  createChartReadout, CHART_READOUT_CSS, createShotThumb, SHOT_THUMB_CSS } from "./core";
+  createChartReadout, CHART_READOUT_CSS, createShotThumb, SHOT_THUMB_CSS, createRefractometerRuntime } from "./core";
 
 const source = readFileSync(resolve("src", "ui.ts"), "utf8");
 const theme = readFileSync(resolve("src", "core", "theme.css"), "utf8");
@@ -323,6 +323,7 @@ const code = transformSync(`${prefix}
 
 type MeasurementButton = {
   disabled: boolean; classList: { add: (name: string) => void; remove: (name: string) => void };
+  setAttribute: (name: string, value: string) => void;
   onclick?: () => Promise<void>;
 };
 type TdsInput = { value: string; isConnected: boolean; dispatchEvent: (event: Event) => void };
@@ -336,42 +337,48 @@ type R2Client = {
   theme: string;
 };
 
-const sensor = { id: "AA:BB:CC:DD:EE:01", info: { name: "DiFluid R2",
-  data: [{ key: "tds", type: "number" }], commands: [{ id: "measure" }] } };
+const sensor = { id: "plugin:difluid-r2.reaplugin:difluid-r2:AA:BB:CC:DD:EE:01", info: { name: "DiFluid R2",
+  data: [{ key: "reading", type: "object" }], commands: [{ id: "measure" }, { id: "measureAverage" }, { id: "getReading" }] } };
 
 function setup({ found = false, state = "sleeping", hidden = false, search = "?view=shot&embed=1&theme=dark",
-  referrer = "", historyLength = 1 } = {}) {
+  referrer = "", historyLength = 1, count = 1 } = {}) {
   const elements = {
     "view-shot": { hidden },
     notice: { textContent: "", className: "" },
   };
-  const button = { hidden: true };
+  const button = { hidden: true, setAttribute: vi.fn() };
   const fetcher = vi.fn(async (url: string, _init?: RequestInit): Promise<Response> => {
     if (url === "/api/v1/sensors") return Response.json(found ? [sensor] : []);
     if (url === "/api/v1/machine/state") return Response.json({ state: { state } });
     if (url === "/api/v1/devices/scan?connect=false") { found = true; return Response.json([]); }
     if (url === "/api/v1/store/streamlineSettings/theme") return Response.json("dark");
-    if (url.endsWith("/execute")) return Response.json({ status: "ok", result: { reading: { tds: 9.37 } } });
+    if (url.endsWith("/execute")) return Response.json({ status: "ok", result:
+      JSON.parse(String(_init?.body)).commandId === "getReading" ? { reading: { tds: 9.37 } } : { started: true } });
     throw new Error(`Unexpected request: ${url}`);
   });
   const dataset: Record<string, string> = {};
   const assign = vi.fn(), back = vi.fn(), postMessage = vi.fn(), onPageEvent = vi.fn();
-  const client: R2Client = runInNewContext(`${code}\nclient(texts)`, {
-    module: { exports: {} }, texts, URLSearchParams, URL, Date, Number, Error, Event, setTimeout, Map, WeakMap,
-    clearTimeout, MutationObserver: class { observe() {} }, addEventListener: onPageEvent,
+  const choose = vi.fn(async () => String(count));
+  const client: R2Client = runInNewContext(`${code}\nclient(texts, undefined, undefined, choose, undefined, undefined, undefined, undefined, makeRefractometer)`, {
+    module: { exports: {} }, texts, makeRefractometer: createRefractometerRuntime, URLSearchParams, URL, Date, Number, Error, Event, setTimeout, Map, WeakMap,
+    clearTimeout, choose, WebSocket: class {
+      onopen?: () => void;
+      constructor() { setTimeout(() => this.onopen?.(), 0); }
+      close() {}
+    }, MutationObserver: class { observe() {} }, addEventListener: onPageEvent,
     history: { length: historyLength, back },
     location: { search, assign }, window: { matchMedia: () => ({ matches: false }), parent: { postMessage } },
     document: {
       referrer,
       documentElement: { dataset, classList: { add: () => {}, contains: () => false } },
       getElementById: (id: keyof typeof elements) => elements[id],
-      querySelectorAll: (selector: string) => selector === "select" ? [] : [button],
+      querySelectorAll: (selector: string) => selector === "button.r2" ? [button] : [],
       querySelector: () => null,
       addEventListener: () => {},
     },
     fetch: fetcher,
   });
-  return { client, fetcher, elements, button, dataset, assign, back, postMessage, onPageEvent };
+  return { client, fetcher, elements, button, dataset, assign, back, postMessage, onPageEvent, choose };
 }
 
 describe("fullscreen page navigation", () => {
@@ -392,7 +399,7 @@ describe("fullscreen page navigation", () => {
     const t = setup({ search, referrer: "http://localhost:3000/", historyLength: 2 });
     t.client.closeOverlay();
     expect(t.back).toHaveBeenCalledOnce();
-    const [event, onHide, options] = t.onPageEvent.mock.calls.find(([name]) => name === "pagehide")!;
+    const [event, onHide, options] = t.onPageEvent.mock.calls.find(([name, , options]) => name === "pagehide" && options?.once)!;
     expect(event).toBe("pagehide");
     expect(options).toEqual({ once: true });
     onHide();
@@ -435,6 +442,21 @@ describe("theme", () => {
 });
 
 describe("R2 controls on the tablet page", () => {
+  it("shows install/load/connect instructions instead of falling back to a native R2", async () => {
+    const t = setup({ found: true });
+    t.fetcher.mockResolvedValueOnce(Response.json([{ id: "native", info: { name: "DiFluid R2",
+      data: [{ key: "tds" }], commands: [{ id: "measure" }] } }]));
+    await t.client.findR2();
+    expect(t.elements.notice.textContent).toBe(texts.r2None);
+    expect(t.button.setAttribute).toHaveBeenCalledWith("aria-label", texts.r2Setup);
+    const button: MeasurementButton = { disabled: false, setAttribute: vi.fn(), classList: { add: vi.fn(), remove: vi.fn() } };
+    const tds: TdsInput = { value: "8.1", isConnected: true, dispatchEvent: vi.fn() };
+    t.client.bindMeasurement(button, tds);
+    await button.onclick!();
+    expect(t.fetcher.mock.calls.some(([url]) => url.endsWith("/execute"))).toBe(false);
+    expect(tds.value).toBe("8.1");
+  });
+
   it("finds the R2 from the data channels sent by Decaid", async () => {
     const t = setup({ found: true });
     await t.client.searchR2IfMissing();
@@ -452,7 +474,8 @@ describe("R2 controls on the tablet page", () => {
     const pending = t.client.searchR2IfMissing();
     await vi.advanceTimersByTimeAsync(0);
     expect(t.fetcher).toHaveBeenLastCalledWith("/api/v1/devices/scan?connect=false");
-    expect(t.button.hidden).toBe(true);
+    expect(t.button.hidden).toBe(false);
+    expect(t.elements.notice.textContent).toBe(texts.r2None);
     t.fetcher.mockImplementationOnce(async () => Response.json([sensor]));
     finishScan!(Response.json([]));
     await pending;
@@ -496,17 +519,24 @@ describe("R2 controls on the tablet page", () => {
     expect(t.fetcher.mock.calls.filter(([url]) => url.includes("/scan"))).toHaveLength(2);
   });
 
-  it("takes one reading into TDS, and keeps TDS when the R2 fails", async () => {
-    const t = setup({ found: true });
+  it.each([1, 7])("takes count %i into TDS only after completion, and keeps TDS when the R2 fails", async (count) => {
+    const t = setup({ found: true, count });
     await t.client.findR2();
-    const button: MeasurementButton = { disabled: false, classList: { add: vi.fn(), remove: vi.fn() } };
+    const button: MeasurementButton = { disabled: false, setAttribute: vi.fn(), classList: { add: vi.fn(), remove: vi.fn() } };
     const tds: TdsInput = { value: "8.1", isConnected: true, dispatchEvent: vi.fn() };
     t.client.bindMeasurement(button, tds);
     await button.onclick!();
     const requests = t.fetcher.mock.calls.filter(([url]) => url.endsWith("/execute"));
-    expect(requests).toHaveLength(1);
-    expect(requests[0]![0]).toBe("/api/v1/sensors/AA%3ABB%3ACC%3ADD%3AEE%3A01/execute");
-    expect(JSON.parse(String(requests[0]![1]!.body))).toEqual({ commandId: "measure", params: { timeout: 30 } });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]![0]).toBe(`/api/v1/sensors/${encodeURIComponent(sensor.id)}/execute`);
+    expect(JSON.parse(String(requests[0]![1]!.body))).toEqual({
+      commandId: count === 1 ? "measure" : "measureAverage", params: count === 1 ? {} : { count },
+    });
+    expect(JSON.parse(String(requests[1]![1]!.body))).toEqual({ commandId: "getReading", params: {} });
+    expect(t.choose).toHaveBeenCalledWith(texts.r2AverageHelp, expect.arrayContaining([
+      expect.objectContaining({ label: texts.r2Single, value: "1" }),
+      expect.objectContaining({ label: "Average ×10", value: "10" }),
+    ]), "cancel");
     expect(tds.value).toBe("9.37");
     expect(tds.dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "input", bubbles: true }));
     t.fetcher.mockImplementationOnce(async () => Response.json({ status: "error", message: "Exception: R2 disconnected" }, { status: 500 }));
