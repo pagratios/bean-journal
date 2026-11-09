@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
-import { createRefractometerRuntime, sensorSubscription, type SensorSubscription } from "./refractometer";
+import { createRefractometerRuntime, parseRefractometerPreference, sensorSubscription, type SensorSubscription } from "./refractometer";
 
 const id = "plugin:difluid-r2.reaplugin:difluid-r2:AA:BB";
 const sensor = { id, name: "DiFluid R2", average: true as const };
@@ -30,6 +30,18 @@ function setup() {
 }
 
 describe("shared refractometer runtime", () => {
+  it("parses reusable preferences with the prior Single/count 3 default", () => {
+    expect(parseRefractometerPreference(null)).toEqual({ mode: "single", count: 3 });
+    for (const mode of ["single", "average"]) for (const count of [2, 3, 10]) {
+      expect(parseRefractometerPreference({ mode, count })).toEqual({ mode, count });
+    }
+    for (const value of [{ mode: "average", count: 1 }, { mode: "average", count: 11 }, { mode: "average", count: 2.5 },
+      { mode: "other", count: 3 }, { mode: "single", count: "3" }, [], "average"]) {
+      expect(() => parseRefractometerPreference(value)).toThrow("invalidArguments");
+    }
+    const parser = runInNewContext(`(${parseRefractometerPreference.toString()})`, { Error });
+    expect(parser({ mode: "average", count: 7 })).toEqual({ mode: "average", count: 7 });
+  });
   it("requires the released driver's prefix, object channel and all three commands, refusing native and unrelated sensors", () => {
     const t = setup();
     expect(t.runtime.discover([
